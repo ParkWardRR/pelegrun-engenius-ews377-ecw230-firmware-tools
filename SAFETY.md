@@ -18,7 +18,12 @@ impossible, but firmware work is never zero-risk. Read this before you use it.
    one. (This is the exact mistake the project was born from.)
 
 ## Always
-- Let the tool take its **backup bundle** (mtd7/8/11 + config + hashes) first.
+- Let the tool take its **backup bundle** (`0:appsblenv`, `0:appsbl`, `0:art` +
+  config + hashes) first. Partitions are resolved **by name** from `/proc/mtd`,
+  never by index — indices differ between units (the EWS377-FIT has extra
+  `cert`/`userconfig`/`crashdump` partitions, so ART is `mtd12` there and `mtd11`
+  on the EWS377AP v3). The plan fails closed if a critical name is missing or
+  ambiguous, and dumps are named by partition + size, not `mtdN`.
 - Treat **ART** (calibration + factory MACs) as **read-only** — never write it.
 - Keep pristine, unpatched stock images as your rollback path.
 - For the first flash on a new model, keep a UART adapter attached.

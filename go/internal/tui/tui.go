@@ -524,7 +524,9 @@ func runBackup() string {
 		b.WriteString(pad(2) + sOK.Render("· ") + sInk.Render(fmt.Sprintf("%-20s", a.Name)) +
 			sSub.Render(fmt.Sprintf("%-26s", a.Command)) + tag + "\n")
 	}
-	b.WriteString(blank() + sSub.Render("RF calibration (factory MACs) is read-only — never written."))
+	b.WriteString(blank() + sSub.Render("Partitions are found by NAME in /proc/mtd, never by index."))
+	b.WriteString("\n" + sSub.Render("RF calibration (factory MACs) is read-only — never written."))
+	b.WriteString("\n" + sWarn.Render("cert / userconfig are secret: keep offline, never attach to an issue."))
 	return b.String()
 }
 
