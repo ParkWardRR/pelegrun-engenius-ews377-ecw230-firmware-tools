@@ -26,7 +26,13 @@ impossible, but firmware work is never zero-risk. Read this before you use it.
   ambiguous, and dumps are named by partition + size, not `mtdN`.
 - Treat **ART** (calibration + factory MACs) as **read-only** — never write it.
 - Keep pristine, unpatched stock images as your rollback path.
-- For the first flash on a new model, keep a UART adapter attached.
+- For the first flash on a new model, keep a UART adapter attached. Recovery
+  differs by hardware revision (the EWS377-FIT's u-boot 2.1.0 has a boot menu,
+  512 MiB RAM and chunked-read limits) — read
+  [`docs/USAGE.md`](docs/USAGE.md#uart-notes-for-the-newer-ews377-fit-u-boot-210-hardware)
+  before you open the case.
+- **Identity vars:** never `env default -a` a unit that still has `ethaddr` /
+  `hw_id` / `sn` / `snextra`; restore from the saved `printenv` backup instead.
 
 ## Backups are secrets
 Raw flash dumps are **not safe to share**. On the EWS377-FIT the `cert`

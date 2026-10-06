@@ -116,6 +116,9 @@ $ pelegrun
 
 **Product ids:** `282` EWS377AP v3 · `300` EWS377-FIT · `284` ECW230v3 · `275` ECW230 · `182` EWS377AP v2 · `285` ECW230S.
 **Model codes:** `X44` EWS377AP v3 · `X45` EWS377-FIT · `X42` ECW230v3.
+`hw_id` in the u-boot env (e.g. `0101012B` on the FIT: vendor `0x0101` + `0x012B`=299) is a
+*different* number from the header `product_id` (300) — see
+[`docs/USAGE.md`](docs/USAGE.md#hw_id-vs-product_id-open-data-request-8).
 
 ## Install
 

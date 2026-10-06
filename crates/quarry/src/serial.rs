@@ -114,10 +114,17 @@ pub fn make_snextra(prefix: &str, model_code3: &str) -> Result<String, Error> {
     Ok(s)
 }
 
-/// True if `s` is a plausible 20-char `snextra` (correct length, ASCII-alnum,
-/// and the model code at 5–7 is extractable).
+/// True if `s` is a plausible 20-char `snextra` (correct length, ASCII-alnum
+/// with optional trailing `*` padding, and the model code at 5–7 is extractable).
+///
+/// Real FIT units store `snextra` as the 12-char serial followed by 8 `*`
+/// (12 + 8 = 20), so trailing `*` is accepted; `*` anywhere inside the body is not.
 pub fn validate_snextra(s: &str) -> bool {
-    s.len() == SNEXTRA_LEN && s.bytes().all(|b| b.is_ascii_alphanumeric()) && model_code(s).is_ok()
+    let body = s.trim_end_matches('*');
+    s.len() == SNEXTRA_LEN
+        && body.len() >= 7
+        && body.bytes().all(|b| b.is_ascii_alphanumeric())
+        && model_code(s).is_ok()
 }
 
 #[cfg(test)]
@@ -159,6 +166,23 @@ mod tests {
         assert!(validate_snextra(&x));
         assert!(!validate_snextra("EPC1X42")); // too short
         assert!(!validate_snextra("EPC1X420000000000!0")); // bad char
+    }
+
+    // Structure of the first physical EWS377-FIT's serial (issue #5): YYWW + X45
+    // + nnnn + Code27 check char, and an env `snextra` = serial + 8 `*`. This is a
+    // synthetic, masked stand-in (the real serial is not published); it pins the
+    // structure and that the FIT's model code is X45.
+    #[test]
+    fn fit_serial_structure_and_star_padded_snextra() {
+        let serial = make_serial("2540", "X45", "0001").unwrap();
+        assert!(validate_serial(&serial));
+        assert_eq!(model_code(&serial).unwrap(), "X45");
+        let snextra = format!("{serial}********");
+        assert_eq!(snextra.len(), SNEXTRA_LEN);
+        assert!(validate_snextra(&snextra));
+        assert_eq!(model_code(&snextra).unwrap(), "X45");
+        assert!(!validate_snextra("2540X4*00010000000000")); // `*` inside the body
+        assert!(!validate_snextra(&"*".repeat(SNEXTRA_LEN)));
     }
 
     #[test]
