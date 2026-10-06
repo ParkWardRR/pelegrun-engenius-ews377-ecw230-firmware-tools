@@ -99,6 +99,22 @@ func TestEnvcheck(t *testing.T) {
 		t.Errorf("envcheck incomplete: code=%d out=%q err=%q", code, out, errout)
 	}
 
+	// The incomplete-env advice must not recommend `env default -a` blindly:
+	// this env still has identity vars (ethaddr) that command would erase.
+	if strings.Contains(out, "run `env default -a` over UART first") || !strings.Contains(out, "do NOT run `env default -a`") {
+		t.Errorf("unsafe recovery advice: %q", out)
+	}
+
+	// Healthy EWS377-FIT env (u-boot 2.1.0, no rootfsname) is accepted (#2);
+	// --strict (u-boot 2.0.0 profile) still demands rootfsname.
+	fit := filepath.Join("..", "..", "internal", "hood", "testdata", "ews377fit-printenv.txt")
+	if code, out, errout := runCap("envcheck", fit); code != 0 || !strings.Contains(out, "COMPLETE") || !strings.Contains(out, "hw_id=0101012B") {
+		t.Errorf("envcheck FIT: code=%d out=%q err=%q", code, out, errout)
+	}
+	if code, out, _ := runCap("envcheck", "--strict", fit); code != 1 || !strings.Contains(out, "rootfsname") {
+		t.Errorf("envcheck --strict FIT: code=%d out=%q", code, out)
+	}
+
 	// Nonexistent file is an I/O error.
 	if code, _, errout := runCap("envcheck", filepath.Join(dir, "nope.txt")); code != 1 || errout == "" {
 		t.Errorf("envcheck missing-file: code=%d err=%q", code, errout)

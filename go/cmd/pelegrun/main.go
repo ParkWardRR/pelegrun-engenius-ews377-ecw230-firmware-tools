@@ -134,8 +134,8 @@ func cmdCheck(out io.Writer, a []string) error {
 func cmdEnvcheck(out io.Writer, a []string) error {
 	var data []byte
 	var err error
-	if len(a) > 0 && a[0] != "-" {
-		data, err = os.ReadFile(a[0])
+	if src := firstPositional(a); src != "" && src != "-" {
+		data, err = os.ReadFile(src)
 	} else {
 		data, err = io.ReadAll(os.Stdin)
 	}
@@ -143,12 +143,21 @@ func cmdEnvcheck(out io.Writer, a []string) error {
 		return err
 	}
 	e := hood.ParsePrintenv(string(data))
-	if e.IsComplete() {
-		fmt.Fprintln(out, "env: COMPLETE — safe to append individual fields")
-		return nil
+	profile := hood.ProfileAuto
+	if has(a, "--strict") {
+		profile = hood.ProfileLegacy // also demand rootfsname (u-boot 2.0.0 units)
 	}
-	fmt.Fprintf(out, "env: INCOMPLETE — missing %v\nrefuse writes; recover with `env default -a` over UART first\n", e.Missing())
-	return fmt.Errorf("incomplete env")
+	if miss := e.MissingFor(profile); len(miss) > 0 {
+		fmt.Fprintf(out, "env: INCOMPLETE — missing %v\nrefuse writes; %s\n", miss, e.Recovery())
+		return fmt.Errorf("incomplete env")
+	}
+	fmt.Fprintln(out, "env: COMPLETE — safe to append individual fields")
+	for _, k := range []string{"hw_id", "hw_ver", "pro_id", "machid"} {
+		if v, ok := e[k]; ok {
+			fmt.Fprintf(out, "  %s=%s\n", k, v)
+		}
+	}
+	return nil
 }
 
 func cmdDiscover(out io.Writer, a []string) error {
@@ -171,13 +180,14 @@ const usageText = "pelegrun — cross-flash & recover EnGenius/Senao ap-hk07 APs
 	"  pelegrun serial  --model X42 [--prefix P --suffix S]   Code27 serial (band)\n" +
 	"  pelegrun snextra --model X42 [--prefix P]              20-char field-19 value\n" +
 	"  pelegrun check   <serial>                              validate a serial\n" +
-	"  pelegrun envcheck [file|-]                             hood env completeness gate\n" +
+	"  pelegrun envcheck [file|-] [--strict]                  hood env completeness gate (--strict also needs rootfsname)\n" +
 	"  pelegrun redact  [file|-] [--mac] [--value S]...       scrub secrets from a bundle/log\n\n" +
 	"Image re-head ships as the quarry binary (Rust). Unofficial; hardware you own only.\n"
 
 const planText = "Safety ladder (why UART is usually unnecessary):\n\n" +
 	"  1. network flash        no UART — dual A/B slot means a bad image never bricks\n" +
 	"  2. network env-repair   no UART — append-only fw_setenv on a verified env\n" +
-	"  3. UART env-repair      gated: env default -a -> inspect -> env save\n" +
+	"  3. UART env-repair      gated: restore the saved printenv backup; `env default -a`\n" +
+	"                          only as a last resort (it erases ethaddr/hw_id/sn/snextra)\n" +
 	"  4. UART TFTP re-flash   truly dead board — pull it back over the wire\n\n" +
 	"Invariants the tool cannot break: write the INACTIVE slot; env is APPEND-ONLY.\n"

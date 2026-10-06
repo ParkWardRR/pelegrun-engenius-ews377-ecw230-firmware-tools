@@ -74,9 +74,14 @@ non-zero if the bootloader env is incomplete — the one state that bricks:
 
 ```console
 $ printf 'ethaddr=00:03:7f:12:3e:87\n' | pelegrun envcheck -
-env: INCOMPLETE — missing [active_fw app_part bootcmd rootfsname]
-refuse writes; recover with `env default -a` over UART first
+env: INCOMPLETE — missing [active_fw app_part bootcmd]
+refuse writes; this env still holds identity variables (ethaddr/hw_id/sn/snextra): do NOT run `env default -a` (it resets them to compiled-in defaults). Restore the saved printenv / APPSBLENV backup instead
 ```
+
+The required set is `bootcmd`, `active_fw`, `app_part` — what every bootloader
+generation needs (the EWS377-FIT's u-boot 2016.01 V2.1.0 has no `rootfsname`).
+Pass `--strict` for the older u-boot 2.0.0 units to also require `rootfsname`.
+On success it echoes `hw_id`/`hw_ver`/`pro_id`/`machid` when present.
 
 Model codes (the 3 chars at serial positions 5–7): `X42` ECW230v3 · `X44`
 EWS377AP v3 · `X45` EWS377-FIT. See the field guide's
@@ -114,8 +119,12 @@ regression-tested against real firmware with `make test-firmware FW=<dir>`.
 Rarely needed, but if a board is truly dead you'll want a USB-TTL adapter on the
 console header. The recovery steps are:
 
-1. **Env repair:** `printenv` → `env default -a` (RAM only) → inspect → `env save`
-   → `env load` → verify → **cold boot** (full power removal, not just `reset`).
+1. **Env repair:** restore the saved `printenv` / APPSBLENV backup first.
+   `env default -a` is a last resort — it resets `ethaddr`, `hw_id`, `sn` and
+   `snextra` to compiled-in defaults (the stock `cloud_guard` cross-checks them
+   against the `cert` partition). If you must: `env default -a` (RAM only) →
+   re-enter the identity vars from your backup → `env save` → `env load` →
+   verify → **cold boot** (full power removal, not just `reset`).
 2. **TFTP re-flash:** point the board's u-boot at your machine and serve it a
    known-good image via a TFTP server.
 
