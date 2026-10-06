@@ -42,6 +42,8 @@ pub enum Error {
     VolumeNotFound { name: String },
     /// Expected a flattened device tree (FDT) blob but the magic didn't match.
     NotFdt,
+    /// A user-supplied header XOR key was malformed or does not decode the image.
+    BadKey { reason: String },
 }
 
 impl core::fmt::Display for Error {
@@ -60,6 +62,7 @@ impl core::fmt::Display for Error {
             Error::NotUbiImage => write!(f, "not a UBI image: missing 'UBI#' EC header magic"),
             Error::VolumeNotFound { name } => write!(f, "UBI volume not found: {name}"),
             Error::NotFdt => write!(f, "not a flattened device tree: bad or missing magic"),
+            Error::BadKey { reason } => write!(f, "header key: {reason}"),
         }
     }
 }

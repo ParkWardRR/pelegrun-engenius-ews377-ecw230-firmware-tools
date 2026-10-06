@@ -8,19 +8,22 @@ fn usage() -> &'static str {
     "quarry — Senao/EnGenius ap-hk07 firmware header + serial tool (unofficial)
 
 USAGE:
-  quarry inspect    <image.bin>
-  quarry rehead     <in.bin> <out.bin> --to <product_id>  # e.g. --to 282
-  quarry verify-ubi <factory.ubi> --board <name>          # e.g. --board hk07
+  quarry inspect    <image.bin> [--key <16hex>]
+  quarry rehead     <in.bin> <out.bin> --to <product_id> [--key <16hex>]  # e.g. --to 282
+  quarry verify-ubi <factory.ubi> [--board <name>[,<name>...]]            # e.g. --board hk07,hk08
   quarry serial     --model <CODE> [--prefix PPPP] [--suffix SSSS]
   quarry snextra    --model <CODE> [--prefix PPPP]        # 20-char field 19
   quarry check      <serial12>
 
 Product ids: 282 = EWS377AP v3, 300 = EWS377-FIT, 284 = ECW230v3.
 Model codes:  X44 = EWS377AP v3, X45 = EWS377-FIT, X42 = ECW230v3.
-verify-ubi checks a factory.ubi's 'kernel' volume for a FIT config node named
-'config@<board>' — the OpenWrt EWS377AP v3 port only boots from NAND with a
-board-matched config name (see openwrt-ews377ap-v3/results-2026-09-06/ in the
-repo history for why)."
+inspect/rehead auto-detect the XOR-obfuscated header of OpenWrt-built
+senao-factory.bin images (known key 783c9ecf67b359ac); pass --key for another.
+verify-ubi checks a factory.ubi's 'kernel' volume for FIT config nodes named
+'config@<board>' — ALL boards listed must be present (the ECW230v3 image carries
+both config@hk07 and config@hk08). Without --board it just lists the configs.
+The OpenWrt EWS377AP v3 port only boots from NAND with a board-matched config
+name (see openwrt-ews377ap-v3/results-2026-09-06/ in the repo history for why)."
 }
 
 fn arg_val(args: &[String], key: &str) -> Option<String> {
@@ -57,17 +60,46 @@ fn main() -> ExitCode {
     }
 }
 
+fn key_arg(a: &[String]) -> Result<Option<quarry::header::Key>, String> {
+    arg_val(a, "--key")
+        .map(|k| quarry::header::parse_key(&k).map_err(|e| e.to_string()))
+        .transpose()
+}
+
+fn hex_key(k: &quarry::header::Key) -> String {
+    k.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn cmd_inspect(a: &[String]) -> Result<(), String> {
     let path = a.first().ok_or("inspect: missing <image.bin>")?;
+    let key = key_arg(a)?;
     let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-    let h = quarry::header::parse(&data).map_err(|e| e.to_string())?;
+    let h = quarry::header::parse_with_key(&data, key.as_ref())
+        .map_err(|e| with_key_hint(e.to_string()))?;
     println!("file        : {path} ({} bytes)", data.len());
     println!("vendor_id   : {}", h.vendor_id);
     println!("product_id  : {} ({})", h.product_id, h.product().label());
     println!("fw_type     : {}", h.firmware_type);
     println!("model       : {}", h.model);
-    println!("magic       : {:#010x} (ok)", h.magic);
+    match h.key {
+        None => println!("magic       : {:#010x} (ok)", h.magic),
+        Some(k) => {
+            println!(
+                "magic       : {:#010x} (key tail; header is XOR-obfuscated)",
+                h.magic
+            );
+            println!("xor key     : {}", hex_key(&k));
+        }
+    }
     Ok(())
+}
+
+fn with_key_hint(msg: String) -> String {
+    if msg.starts_with("bad Senao magic") {
+        format!("{msg}\nhint: an OpenWrt-built senao-factory.bin is XOR-obfuscated; if it uses a key other than the built-in one, pass --key <16 hex digits> (mksenaofw -m)")
+    } else {
+        msg
+    }
 }
 
 fn cmd_rehead(a: &[String]) -> Result<(), String> {
@@ -77,8 +109,10 @@ fn cmd_rehead(a: &[String]) -> Result<(), String> {
         .ok_or("rehead: missing --to <product_id>")?
         .parse()
         .map_err(|_| "rehead: --to must be a number")?;
+    let key = key_arg(a)?;
     let mut data = std::fs::read(input).map_err(|e| format!("read {input}: {e}"))?;
-    let old = quarry::header::rehead(&mut data, to).map_err(|e| e.to_string())?;
+    let old = quarry::header::rehead_with_key(&mut data, to, key.as_ref())
+        .map_err(|e| with_key_hint(e.to_string()))?;
     std::fs::write(output, &data).map_err(|e| format!("write {output}: {e}"))?;
     println!(
         "re-headed product_id {} -> {} : {} bytes -> {}",
@@ -88,29 +122,46 @@ fn cmd_rehead(a: &[String]) -> Result<(), String> {
         output
     );
     println!("note: verify on a recoverable A/B slot; the tool never asserts a flash succeeded.");
+    println!(
+        "warning: re-heading changes ONLY product_id. The payload keeps the donor SKU's DTS model,\n         ath11k calibration variant and Wi-Fi board-2.bin: it can boot and bring radios up on\n         the donor's RF data while reporting the wrong model. Fine for a test, not for a release."
+    );
     Ok(())
 }
 
 fn cmd_verify_ubi(a: &[String]) -> Result<(), String> {
     let path = a.first().ok_or("verify-ubi: missing <factory.ubi>")?;
-    let board = arg_val(a, "--board").ok_or("verify-ubi: missing --board <name>")?;
+    let boards: Vec<String> = arg_val(a, "--board")
+        .map(|v| {
+            v.split(',')
+                .map(|b| b.trim().to_string())
+                .filter(|b| !b.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
     let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-    let result = quarry::ubi::check_factory_ubi(&data, &board).map_err(|e| e.to_string())?;
+    // The first board (or a dummy) drives the call; `configs` carries them all.
+    let probe = boards.first().map(String::as_str).unwrap_or("");
+    let result = quarry::ubi::check_factory_ubi(&data, probe).map_err(|e| e.to_string())?;
     println!("file             : {path} ({} bytes)", data.len());
     println!("kernel volume    : {} bytes", result.kernel_volume_bytes);
-    println!(
-        "config@{board:<9}: {}",
-        if result.has_config {
-            "present"
-        } else {
-            "MISSING"
+    println!("fit configs      : {}", result.configs.join(", "));
+    let mut missing = Vec::new();
+    for b in &boards {
+        let present = result.configs.contains(&format!("config@{b}"));
+        println!(
+            "config@{b:<9}: {}",
+            if present { "present" } else { "MISSING" }
+        );
+        if !present {
+            missing.push(b.as_str());
         }
-    );
-    if result.has_config {
+    }
+    if missing.is_empty() {
         Ok(())
     } else {
         Err(format!(
-            "kernel volume has no /configurations/config@{board} node — bootipq will refuse to boot this image from NAND"
+            "kernel volume has no /configurations/config@{} node — bootipq will refuse to boot this image from NAND",
+            missing.join(", config@")
         ))
     }
 }

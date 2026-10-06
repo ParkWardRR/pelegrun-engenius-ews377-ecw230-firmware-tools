@@ -173,7 +173,13 @@ const FDT_END: u32 = 0x0000_0009;
 /// node literally named `"configurations"`. Bounded by `off_dt_struct` +
 /// `size_dt_struct` from the header — never reads past the declared struct
 /// block, so trailing padding in a reassembled volume is harmless.
+#[cfg(test)]
 fn fdt_has_config_child(fdt: &[u8], child_name: &str) -> Result<bool, Error> {
+    Ok(fdt_config_children(fdt)?.iter().any(|n| n == child_name))
+}
+
+/// Every immediate child of `/configurations`, in tree order.
+fn fdt_config_children(fdt: &[u8]) -> Result<Vec<String>, Error> {
     if fdt.len() < 40 || be_u32_at(fdt, 0) != Some(FDT_MAGIC) {
         return Err(Error::NotFdt);
     }
@@ -186,7 +192,7 @@ fn fdt_has_config_child(fdt: &[u8], child_name: &str) -> Result<bool, Error> {
 
     let mut pos = off_dt_struct;
     let mut node_stack: Vec<String> = Vec::new();
-    let mut found = false;
+    let mut found: Vec<String> = Vec::new();
 
     while pos + 4 <= struct_end {
         let token = be_u32_at(fdt, pos).ok_or(Error::NotFdt)?;
@@ -202,10 +208,8 @@ fn fdt_has_config_child(fdt: &[u8], child_name: &str) -> Result<bool, Error> {
                 let name = String::from_utf8_lossy(&fdt[name_start..name_end]).into_owned();
                 pos = align4(name_end + 1);
 
-                if node_stack.last().map(String::as_str) == Some("configurations")
-                    && name == child_name
-                {
-                    found = true;
+                if node_stack.last().map(String::as_str) == Some("configurations") {
+                    found.push(name.clone());
                 }
                 node_stack.push(name);
             }
@@ -233,7 +237,11 @@ fn align4(n: usize) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactoryUbiCheck {
     pub kernel_volume_bytes: usize,
+    /// `config@<board>` was present (the single board passed to the check).
     pub has_config: bool,
+    /// Every `/configurations/*` child node name in the FIT (e.g. `config@hk07`,
+    /// `config@hk08`), so callers can check for any/all or just list them.
+    pub configs: Vec<String>,
 }
 
 /// Confirm `data` is a UBI image, locate its `kernel` volume, and check
@@ -247,11 +255,12 @@ pub fn check_factory_ubi(data: &[u8], board: &str) -> Result<FactoryUbiCheck, Er
     }
     let kernel_vol_id = find_volume_id(data, "kernel")?;
     let kernel = read_volume(data, kernel_vol_id)?;
+    let configs = fdt_config_children(&kernel)?;
     let config_name = format!("config@{board}");
-    let has_config = fdt_has_config_child(&kernel, &config_name)?;
     Ok(FactoryUbiCheck {
         kernel_volume_bytes: kernel.len(),
-        has_config,
+        has_config: configs.contains(&config_name),
+        configs,
     })
 }
 
@@ -310,6 +319,20 @@ mod tests {
         let fdt = synth_fdt(&["config@1", "config@hk07"]);
         assert!(fdt_has_config_child(&fdt, "config@hk07").unwrap());
         assert!(!fdt_has_config_child(&fdt, "config@ap8220").unwrap());
+    }
+
+    #[test]
+    fn lists_all_config_children() {
+        // ECW230v3 image carries two FIT configs (issue #6).
+        let fdt = synth_fdt(&["config@hk07", "config@hk08"]);
+        assert_eq!(
+            fdt_config_children(&fdt).unwrap(),
+            vec!["config@hk07", "config@hk08"]
+        );
+        let img = synth_ubi(&fdt);
+        let r = check_factory_ubi(&img, "hk08").unwrap();
+        assert!(r.has_config);
+        assert_eq!(r.configs.len(), 2);
     }
 
     #[test]
