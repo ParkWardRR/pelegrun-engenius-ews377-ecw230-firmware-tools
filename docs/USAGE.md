@@ -64,7 +64,7 @@ pelegrun serial  --model X42 --prefix SWLW --suffix 0001   # → SWLWX420001T
 pelegrun snextra --model X42             # → 20-char u-boot field-19 value
 pelegrun check   EPC1X4200011            # → serial=… valid=true model_code=X42
 pelegrun envcheck env.txt                # completeness gate; refuses if incomplete
-pelegrun redact  bundle.txt --mac --value <serial>   # scrub secrets
+pelegrun redact  bundle.txt --mac --value <serial>   # scrub keys, tokens, serials, identity
 pelegrun plan                            # print the ordered, gated flash plan
 pelegrun version
 ```
@@ -82,6 +82,12 @@ The required set is `bootcmd`, `active_fw`, `app_part` — what every bootloader
 generation needs (the EWS377-FIT's u-boot 2016.01 V2.1.0 has no `rootfsname`).
 Pass `--strict` for the older u-boot 2.0.0 units to also require `rootfsname`.
 On success it echoes `hw_id`/`hw_ver`/`pro_id`/`machid` when present.
+
+`pelegrun redact` always scrubs passwords/tokens, PEM private keys (even
+truncated ones), bare base64 key bodies, `snextra=`/`sn=` values, and the
+`cert` partition's `SN/MAC/HWID` record; `--mac` additionally scrubs MAC
+addresses. **Backups are secrets** — see [`SAFETY.md`](../SAFETY.md#backups-are-secrets);
+never attach a raw dump to an issue.
 
 Model codes (the 3 chars at serial positions 5–7): `X42` ECW230v3 · `X44`
 EWS377AP v3 · `X45` EWS377-FIT. See the field guide's

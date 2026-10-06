@@ -28,6 +28,26 @@ impossible, but firmware work is never zero-risk. Read this before you use it.
 - Keep pristine, unpatched stock images as your rollback path.
 - For the first flash on a new model, keep a UART adapter attached.
 
+## Backups are secrets
+Raw flash dumps are **not safe to share**. On the EWS377-FIT the `cert`
+partition holds the unit's **cloud RSA private key** (a PEM
+`-----BEGIN RSA PRIVATE KEY-----` block) plus a `SN/MAC/HWID` identity record,
+and `userconfig` can hold credentials. Anything that dumps the boot region
+(`0x0–0x1000000`) or "all partitions" includes them.
+
+- **Never** post a backup, a raw dump, or `strings`/`grep` output of one to a
+  GitHub issue, pastebin, forum, or chat. If you need to share a log, run it
+  through `pelegrun redact` first (it scrubs PEM private keys — including
+  truncated ones — bare base64 key bodies, `SN/MAC/HWID` records, and
+  `snextra=`/`sn=` values) and eyeball the result.
+- The backup bundle keeps `cert`/`userconfig` in a separate `secret/` directory,
+  apart from the shareable evidence (`proc-mtd.txt`, `env-good.txt`, ART,
+  APPSBL/APPSBLENV). Treat `secret/` as a password-grade secret.
+- Encrypt the bundle at rest and store it offline, e.g.
+  `tar c <bundle> | age -p > <bundle>.tar.age` (or `gpg -c`).
+- Be careful with ART too: it carries factory calibration (and, on older units,
+  MACs). It is not a key, but there is no reason to publish it.
+
 ## Scope & legal
 Unofficial; **not affiliated with, endorsed by, or supported by EnGenius or
 Senao.** Those names are used only to identify the affected products. For

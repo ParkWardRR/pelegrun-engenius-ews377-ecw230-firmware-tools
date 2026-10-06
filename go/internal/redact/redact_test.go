@@ -90,3 +90,64 @@ func TestWithValuesDoesNotMutateOriginal(t *testing.T) {
 		t.Fatal("WithValues must not mutate the receiver")
 	}
 }
+
+// A fake key (never a real one): cert-partition-style dump from the EWS377-FIT.
+const fakeCert = "SN/MAC/HWID\n39\nFAKESERIAL12/88:DC:97:00:00:00/0101012B\n" +
+	"-----BEGIN RSA PRIVATE KEY-----\n" +
+	"MIIEowIBAAKCAQEAfakefakefakefakefakefakefakefakefakefakefakefakefake1\n" +
+	"fakefakefakefakefakefakefakefakefakefakefakefakefakefakefakefakefake2\n" +
+	"fakefake+/==\n" +
+	"-----END RSA PRIVATE KEY-----\n"
+
+func TestCertPartitionDump(t *testing.T) {
+	out := Default().Text(fakeCert)
+	for _, leak := range []string{"FAKESERIAL12", "88:DC:97:00:00:00", "0101012B", "fakefakefake", "MIIEow"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("%q leaked from cert dump:\n%s", leak, out)
+		}
+	}
+	if !strings.Contains(out, "[REDACTED:private-key]") || !strings.Contains(out, "[REDACTED:identity]") {
+		t.Errorf("expected both placeholders:\n%s", out)
+	}
+}
+
+func TestTruncatedPEMAndBareBase64(t *testing.T) {
+	// BEGIN with no END (dump cut off).
+	trunc := "x\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAfakefakefakefakefakefakefakefakefakefakefakefake\nmore"
+	out := Default().Text(trunc)
+	if strings.Contains(out, "MIIEow") || strings.Contains(out, "more") || !strings.HasPrefix(out, "x\n") {
+		t.Errorf("truncated PEM leaked or ate preceding text:\n%s", out)
+	}
+	// A middle chunk of a key printed without markers.
+	body := "ok\nMIIEowIBAAKCAQEAfakefakefakefakefakefakefakefakefakefakefakefakefake1\n" +
+		"fakefakefakefakefakefakefakefakefakefakefakefakefakefakefakefakefake2\nSHORT+tail=\nafter"
+	out = Default().Text(body)
+	if strings.Contains(out, "fakefake") || strings.Contains(out, "SHORT") {
+		t.Errorf("bare base64 body leaked:\n%s", out)
+	}
+	if !strings.Contains(out, "ok\n") || !strings.HasSuffix(out, "after") {
+		t.Errorf("surrounding text must survive:\n%s", out)
+	}
+}
+
+func TestBase64HeuristicSparesHashesAndProse(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	in := sha + "\n" + sha + "\nThis is an ordinary sentence of prose that is long enough to be a line.\n"
+	if out := Default().Text(in); out != in {
+		t.Errorf("hex checksums / prose must be untouched:\n%s", out)
+	}
+}
+
+func TestSnextraAndCloudGuardLog(t *testing.T) {
+	in := "snextra=ABCDEFGHIJKL********\nsn=000000001\nbootcmd=bootipq\n" +
+		"uboot(SN/MAC/HWID)[ABCDEFGHIJKL/88:DC:97:00:00:00/0101012B], cert(SN/MAC/HWID)[ABCDEFGHIJKL/88:DC:97:00:00:00/0101012B], no problem.\n"
+	out := Default().Text(in)
+	for _, leak := range []string{"ABCDEFGHIJKL", "88:DC:97", "000000001", "0101012B"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("%q leaked:\n%s", leak, out)
+		}
+	}
+	if !strings.Contains(out, "bootcmd=bootipq") || !strings.Contains(out, "no problem") {
+		t.Errorf("non-secret text must be preserved:\n%s", out)
+	}
+}

@@ -33,6 +33,9 @@ const (
 	CatPrivateKey Category = "private-key"
 	// CatMAC redacts MAC addresses (identity — opt-in; off in Default).
 	CatMAC Category = "mac"
+	// CatIdentity redacts per-unit serial identity: snextra=/sn= env values and
+	// the cert partition's `SN/MAC/HWID` record (also the cloud_guard log form).
+	CatIdentity Category = "identity"
 )
 
 // placeholder is what a redacted span becomes.
@@ -44,7 +47,25 @@ var (
 	bearer   = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+`)
 	jwt      = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}`)
 	pemKey   = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
-	macAddr  = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b`)
+	// pemKeyOpen is a PEM private key with no END line — a truncated dump or a
+	// partial paste. Everything after the BEGIN line is key material.
+	pemKeyOpen = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*`)
+	macAddr    = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b`)
+
+	// Identity: `snextra=` / `sn=` env values.
+	identityKV = regexp.MustCompile(`(?im)(\b(?:snextra|sn)\s*=\s*)([^\s]+)`)
+	// cert partition record: "SN/MAC/HWID\n39\n<serial>/<mac>/<hwid>".
+	identityRecord = regexp.MustCompile(`(?m)(SN/MAC/HWID[ \t]*\r?\n[ \t]*\d+[ \t]*\r?\n)([^\r\n]+)`)
+	// cloud_guard log form: "uboot(SN/MAC/HWID)[a/b/c]".
+	identityLog = regexp.MustCompile(`(SN/MAC/HWID\)\[)[^\]]*`)
+	// Any serial/mac/hwid triple.
+	identityTriple = regexp.MustCompile(`(?i)\b[0-9a-z*]{8,24}/(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}/[0-9a-f]{6,8}\b`)
+
+	// A full base64 body line (PEM wraps at 64; MIME at 76).
+	b64Line = regexp.MustCompile(`^[A-Za-z0-9+/]{60,}={0,2}$`)
+	// The short final line of a base64 body.
+	b64Tail = regexp.MustCompile(`^[A-Za-z0-9+/]{4,}={0,2}$`)
+	hexOnly = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 )
 
 // Redactor scrubs text per its enabled categories plus any explicit literals.
@@ -60,6 +81,7 @@ func Default() *Redactor {
 		CatSecretKV:   true,
 		CatBearer:     true,
 		CatPrivateKey: true,
+		CatIdentity:   true,
 	}}
 }
 
@@ -95,6 +117,15 @@ func (r *Redactor) on(c Category) bool { return r.Categories != nil && r.Categor
 func (r *Redactor) Text(s string) string {
 	if r.on(CatPrivateKey) {
 		s = pemKey.ReplaceAllString(s, placeholder(CatPrivateKey))
+		s = pemKeyOpen.ReplaceAllString(s, placeholder(CatPrivateKey))
+		s = scrubBase64Bodies(s)
+	}
+	if r.on(CatIdentity) {
+		ph := placeholder(CatIdentity)
+		s = identityRecord.ReplaceAllString(s, "${1}"+ph)
+		s = identityLog.ReplaceAllString(s, "${1}"+ph)
+		s = identityTriple.ReplaceAllString(s, ph)
+		s = identityKV.ReplaceAllString(s, "${1}"+ph)
 	}
 	if r.on(CatBearer) {
 		s = bearer.ReplaceAllString(s, "Bearer "+placeholder(CatBearer))
@@ -114,6 +145,42 @@ func (r *Redactor) Text(s string) string {
 		}
 	}
 	return s
+}
+
+// scrubBase64Bodies replaces bare base64 bodies — runs of at least two full
+// base64 lines (plus an optional short tail) with no PEM markers, e.g. a chunk of
+// a private key dumped from flash without its BEGIN line. Pure-hex lines are left
+// alone so checksum listings survive.
+func scrubBase64Bodies(s string) string {
+	lines := strings.Split(s, "\n")
+	var out []string
+	for i := 0; i < len(lines); {
+		if !isB64Full(lines[i]) {
+			out = append(out, lines[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(lines) && isB64Full(lines[j]) {
+			j++
+		}
+		if j-i < 2 {
+			out = append(out, lines[i:j]...)
+			i = j
+			continue
+		}
+		if j < len(lines) && b64Tail.MatchString(strings.TrimRight(lines[j], "\r")) {
+			j++
+		}
+		out = append(out, placeholder(CatPrivateKey))
+		i = j
+	}
+	return strings.Join(out, "\n")
+}
+
+func isB64Full(l string) bool {
+	l = strings.TrimRight(l, "\r")
+	return b64Line.MatchString(l) && !hexOnly.MatchString(l)
 }
 
 // replaceFold replaces every case-insensitive occurrence of old in s.
