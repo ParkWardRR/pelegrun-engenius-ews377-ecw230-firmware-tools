@@ -86,7 +86,48 @@ Two rules keep a failed flash recoverable over the network:
 
 **When UART *is* required:** only when the network path is already gone — a
 wiped bootloader env, a rootfs that won't boot, or a first flash of an unproven
-model as a safety net.
+model as a safety net. **Plus one firmware-line exception** — see below.
+
+## Related silicon: the ECW336, and why its path is not network-only
+
+The **ECW336** (Wi-Fi 6E tri-band) is the *same Senao `ap-hk07` board family* —
+a live unit reports `machid=8010006`, `soc_version_major=2` — and its Senao
+container is byte-identical in construction (same XOR key `783c9ecf67b359ac`,
+same plaintext header). So the image-side tooling here reads and patches its
+firmware fine.
+
+What does **not** transfer is the network-only workflow, and the reason is the
+*firmware line*, not the board:
+
+| firmware line | remote shell | consequence |
+|---|---|---|
+| FIT / EWS builds (what this tool targets) | **SSH on port 8822**, works | conversion is network-only, as documented above |
+| ECW cloud builds (stock ECW336, stock ECW230v3) | **none usable** | UART needed for env changes |
+
+On a stock ECW336 (`1.8.118-12`), `POST /api/mgm/ssh {"enable":true}` really does
+start dropbear — port 22 opens and answers `SSH-2.0-dropbear`, which is already
+better than older ap-hk07 managed builds where the daemon never started at all.
+But **every login is refused**: `root` → `"Not support for root account."`,
+`admin` → likewise. It is not a passwd problem (`/etc/passwd` gives both uid 0
+and `/bin/ash`) and there is no second port — `/etc/config/dropbear` ships
+`Port '22'` with `RootPasswordAuth 'on'`, which is why the password prompt is
+accepted and the *account* is then rejected.
+
+Practical upshot if you point this tool at an ECW-line device still on cloud
+firmware: **budget a UART session.** Adoption onto a private controller also
+needs the u-boot env `cloud_id=3` (the ECW-specific gate; `force_ac` and mDNS
+are not substitutes until that is set). Full write-ups:
+
+- [ECW336-firmware-tools](https://github.com/ParkWardRR/ECW336-firmware-tools)
+  — the no-brick flash, reproduced on three units, and EPC adoption
+- [engenius-field-guide → `ecw-private-cloud-mode`](https://github.com/ParkWardRR/engenius-field-guide/blob/main/ecw-private-cloud-mode.md)
+  — the `cloud_id` mechanism and check-in status codes
+
+The two invariants above hold unchanged on that hardware — they were, if
+anything, re-confirmed by it: the ECW336 keeps its **only** copy of `ethaddr`,
+`sn`, `snextra` and `hw_id` in the bootloader env (u-boot reports the ART copy
+invalid and falls back to the Qualcomm dummy `00:03:7f:ba:db:ad`), so an erased
+or hand-rebuilt env there is permanent identity loss.
 
 ## Quick start
 
