@@ -88,13 +88,25 @@ Two rules keep a failed flash recoverable over the network:
 wiped bootloader env, a rootfs that won't boot, or a first flash of an unproven
 model as a safety net. **Plus one firmware-line exception** — see below.
 
-## Related silicon: the ECW336, and why its path is not network-only
+## Related hardware: the ECW336, and why its path is not network-only
 
-The **ECW336** (Wi-Fi 6E tri-band) is the *same Senao `ap-hk07` board family* —
-a live unit reports `machid=8010006`, `soc_version_major=2` — and its Senao
-container is byte-identical in construction (same XOR key `783c9ecf67b359ac`,
-same plaintext header). So the image-side tooling here reads and patches its
-firmware fine.
+The **ECW336** (Wi-Fi 6E tri-band) shares this generation's **SoC — IPQ8074** —
+and its Senao container is byte-identical in construction (same XOR key
+`783c9ecf67b359ac`, same plaintext header), so the image-side tooling here reads
+and patches its firmware fine.
+
+It is **not** the same *board*, though. A live ECW336 reports
+`machid=0x8010006`, which u-boot's own CDT line decodes as
+`Platform 8 / Major 1 / Minor 0 / Subtype 6` — and HK01 revision DTBs map
+`C<N>` ↔ subtype N, so that is **AP-HK01-C6**, matching the `Platform Name:
+ap-hk01-c6` userspace prints. `ap-hk07` (SoC id pair `0x156 0x185`), which this
+tool targets, is a **different board**; its DTB merely ships alongside in the
+ECW336's multi-board kernel (~25 DTBs: `hk01`–`hk14`, `ac0x`, `oak0x`).
+
+Its 6 GHz radio is a **separate QCN9074 over PCIe** (`QCN9000_PCI0`) — Qualcomm
+Pine PN02-class — not part of the HK01 host. (The `C6` is board revision 6; it
+has nothing to do with 6 GHz, and there is no "6E HK01".) So treat the ECW336 as
+*same SoC, adjacent board, extra radio* — not a drop-in sibling.
 
 What does **not** transfer is the network-only workflow, and the reason is the
 *firmware line*, not the board:
