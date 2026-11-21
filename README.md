@@ -95,13 +95,27 @@ and its Senao container is byte-identical in construction (same XOR key
 `783c9ecf67b359ac`, same plaintext header), so the image-side tooling here reads
 and patches its firmware fine.
 
-It is **not** the same *board*, though. A live ECW336 reports
-`machid=0x8010006`, which u-boot's own CDT line decodes as
-`Platform 8 / Major 1 / Minor 0 / Subtype 6` — and HK01 revision DTBs map
-`C<N>` ↔ subtype N, so that is **AP-HK01-C6**, matching the `Platform Name:
-ap-hk01-c6` userspace prints. `ap-hk07` (SoC id pair `0x156 0x185`), which this
-tool targets, is a **different board**; its DTB merely ships alongside in the
-ECW336's multi-board kernel (~25 DTBs: `hk01`–`hk14`, `ac0x`, `oak0x`).
+It is **not** the same *board*, though — and the labels actively mislead here.
+The DTB a live ECW336 boots sits in the config slot *named* `hk07` and even
+carries `model = "…IPQ8074/AP-HK07"`, but its machine-readable id says
+otherwise:
+
+```
+compatible = qcom,ipq8074-ap-hk01-c6, qcom,ipq8074-hk01, qcom,ipq8074
+```
+
+Senao writes its own board content into a generic QSDK slot (the stock kernel
+ships ~25 of them), so **neither the slot name nor the `model` string is an
+identity** — that same `AP-HK07` model string appears in the EWS377-FIT's DTB.
+**Read `compatible`**, as OpenWrt's `board_detect` does: this unit is
+`ap-hk01-c6`. Qualcomm's own `firmware_rdp_feature.ini` (shipped in the
+ECW336's wifi-firmware volume) agrees — it has a
+`#HK01-C6 - Pine RDPs : Pine6G + HK(2G+5G) in HK01 platform` section and **no
+`ap-hk07` entry at all**.
+
+Note `machid` won't separate them either: the ECW336 and an EWS377-FIT both
+report `machid=0x8010006`, differing only in `hw_id` (`01010123` vs
+`0101012B`). Same slot selected, different board content inside it.
 
 Its 6 GHz radio is a **separate QCN9074 over PCIe** (`QCN9000_PCI0`) — Qualcomm
 Pine PN02-class — not part of the HK01 host. (The `C6` is board revision 6; it
