@@ -69,6 +69,35 @@ pelegrun plan                            # print the ordered, gated flash plan
 pelegrun version
 ```
 
+### What `serial` and `snextra` do *not* do
+
+Both produce values that pass the Code27 check. Neither produces a
+*factory-shaped* serial, which matters when a controller or a support tech looks
+at one. The vendor's own grammar (from `/usr/sbin/snconverter.sh` in the stock
+rootfs) is `YY` + month `1`-`9`/`A`-`C` + factory digit `0` + model code +
+**4 base-27 digits of sequence** + check char:
+
+- `--suffix` is the sequence field, and it is **not** encoded for you. Pass the
+  four base-27 characters (alphabet `1DK3R5FPWME47GTX8VL2J6C9NQH`, index 0 =
+  `1`, so sequence 1 is `111D`). The default `0001` validates but is not
+  factory-shaped — `0` is not in that alphabet.
+- `snextra` emits `prefix + code + "0"` padding to 20
+  (`EPC1X42` → `EPC1X420000000000000`). That contains no 12-char serial and so
+  no check character, and the device's own `/usr/sbin/sncheck.sh` reports `NG`
+  on it. Real FIT units hold the 12-char serial plus eight `*`
+  (`26A0X45111DR********`) — build that from `serial` output instead.
+
+For a **migration** between hardware-equivalent siblings, don't mint at all:
+read the unit's `snextra`, keep its date/factory/sequence, and swap only the
+model code, e.g. `X44` → `X45`:
+
+```sh
+pelegrun serial --model X45 --prefix 26A0 --suffix 111D   # → 26A0X45111DR
+```
+
+A freshly minted serial is a second device as far as the controller is
+concerned, and the unit's existing registration will not follow the hardware.
+
 `pelegrun envcheck` reads a `fw_printenv` dump (file, or `-` for stdin) and exits
 non-zero if the bootloader env is incomplete — the one state that bricks:
 
