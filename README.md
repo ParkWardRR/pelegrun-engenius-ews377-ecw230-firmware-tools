@@ -197,8 +197,11 @@ $ quarry rehead ecw230v3-v1.8.114-1.bin patched.bin --to 282
 $ quarry inspect patched.bin
 
 # Generate a unique serial and snextra for the target model
-$ quarry serial  --model X42 --prefix EPC1 --suffix 0001
-$ quarry snextra --model X42 --prefix EPC1
+$ quarry serial  --model X42 --prefix EPC1 --seq 1      # sequence -> 4 base-27 digits
+$ quarry snextra --model X42 --prefix EPC1 --seq 1      # that serial + eight '*'
+
+# Migrating an existing unit: keep its prefix and sequence, change only --model
+$ quarry serial  --model X45 --prefix 26A0 --suffix 111D
 
 # Fingerprint what firmware an AP is running
 $ pelegrun discover http://192.168.1.1

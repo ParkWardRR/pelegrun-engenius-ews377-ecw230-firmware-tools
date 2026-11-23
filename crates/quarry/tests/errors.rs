@@ -1,7 +1,7 @@
 //! Error-path and display coverage for quarry's public surface.
 
 use quarry::header::Product;
-use quarry::serial::{make_serial, make_snextra, model_code, validate_snextra};
+use quarry::serial::{make_serial, make_snextra, model_code, validate_serial, validate_snextra};
 use quarry::Error;
 
 #[test]
@@ -69,18 +69,26 @@ fn serial_length_and_char_errors() {
 fn snextra_errors_and_defaulting() {
     // Wrong model-code length.
     assert!(matches!(
-        make_snextra("SWLW", "XX"),
+        make_snextra("SWLW", "XX", "0001"),
         Err(Error::BadLength { .. })
     ));
     // Non-alnum prefix.
     assert!(matches!(
-        make_snextra("BAD!", "X42"),
+        make_snextra("BAD!", "X42", "0001"),
         Err(Error::BadChar { .. })
     ));
+    // Wrong sequence-field length.
+    assert!(matches!(
+        make_snextra("SWLW", "X42", "001"),
+        Err(Error::BadLength { .. })
+    ));
     // Empty prefix defaults to SWLW.
-    let x = make_snextra("", "X42").unwrap();
+    let x = make_snextra("", "X42", "0001").unwrap();
     assert_eq!(&x[..4], "SWLW");
     assert!(validate_snextra(&x));
+    // The field is a whole serial plus `*` padding, never zero padding.
+    assert!(x.ends_with("********"));
+    assert!(validate_serial(&x[..12]));
     // Too-short / bad-char snextra fail validation.
     assert!(!validate_snextra("SWLWX42"));
     assert!(!validate_snextra("SWLWX420000000000!00"));

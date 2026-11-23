@@ -549,7 +549,7 @@ func runIdentity() string {
 	var b strings.Builder
 	b.WriteString(sBody.Render("Mint a unique, valid serial per unit. Collisions are refused.") + blank() + blank())
 	for i, mdl := range [][2]string{{"ECW230v3", "X42"}, {"EWS377-FIT", "X45"}, {"EWS377AP v3", "X44"}} {
-		ser, _ := band.MakeSerial("SWLW", mdl[1], fmt.Sprintf("%04d", i+1))
+		ser, _ := band.MakeSerial("SWLW", mdl[1], band.Seq4(uint32(i+1)))
 		ok := sOK.Render("valid")
 		if !band.ValidateSerial(ser) {
 			ok = sNo.Render("BAD")
@@ -557,7 +557,7 @@ func runIdentity() string {
 		b.WriteString(pad(2) + sInk.Render(fmt.Sprintf("%-12s", mdl[0])) + sSub.Render("→ ") +
 			sKey.Render(ser) + sSub.Render("  ("+mdl[1]+")  ") + ok + "\n")
 	}
-	x, _ := band.MakeSnextra("SWLW", "X42")
+	x, _ := band.MakeSnextra("SWLW", "X42", band.Seq4(1))
 	b.WriteString(blank() + pad(2) + sSub.Render("field 19 (20 chars): ") + sAccent.Render(x))
 	return b.String()
 }

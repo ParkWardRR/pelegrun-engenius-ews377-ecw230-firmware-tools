@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,12 +94,38 @@ func or(v, def string) string {
 	return v
 }
 
+// seqArg resolves the sequence field at serial positions 8-11: --suffix
+// verbatim, or --seq encoded as the vendor's 4 base-27 digits. Defaults to
+// sequence 1 ("111D") — a shape a factory serial can actually have, unlike the
+// old "0001" default ('0' is not in the Code27 alphabet).
+func seqArg(a []string, cmd string) (string, error) {
+	suffix, seq := argVal(a, "--suffix"), argVal(a, "--seq")
+	switch {
+	case suffix != "" && seq != "":
+		return "", fmt.Errorf("%s: pass --suffix or --seq, not both", cmd)
+	case suffix != "":
+		return suffix, nil
+	case seq != "":
+		n, err := strconv.ParseUint(seq, 10, 32)
+		if err != nil {
+			return "", fmt.Errorf("%s: --seq wants a non-negative integer, got %q", cmd, seq)
+		}
+		return band.Seq4(uint32(n)), nil
+	default:
+		return band.Seq4(1), nil
+	}
+}
+
 func cmdSerial(out io.Writer, a []string) error {
 	model := argVal(a, "--model")
 	if model == "" {
 		return fmt.Errorf("serial: --model <CODE> required (e.g. X42)")
 	}
-	s, err := band.MakeSerial(or(argVal(a, "--prefix"), "SWLW"), model, or(argVal(a, "--suffix"), "0001"))
+	suffix, err := seqArg(a, "serial")
+	if err != nil {
+		return err
+	}
+	s, err := band.MakeSerial(or(argVal(a, "--prefix"), "SWLW"), model, suffix)
 	if err != nil {
 		return err
 	}
@@ -111,7 +138,11 @@ func cmdSnextra(out io.Writer, a []string) error {
 	if model == "" {
 		return fmt.Errorf("snextra: --model <CODE> required")
 	}
-	s, err := band.MakeSnextra(argVal(a, "--prefix"), model)
+	suffix, err := seqArg(a, "snextra")
+	if err != nil {
+		return err
+	}
+	s, err := band.MakeSnextra(argVal(a, "--prefix"), model, suffix)
 	if err != nil {
 		return err
 	}
@@ -234,8 +265,8 @@ const usageText = "pelegrun — cross-flash & recover EnGenius/Senao IPQ807x APs
 	"  pelegrun                 launch the TUI (default)\n" +
 	"  pelegrun version | plan\n" +
 	"  pelegrun discover <url>            fingerprint firmware family (eyas)\n" +
-	"  pelegrun serial  --model X42 [--prefix P --suffix S]   Code27 serial (band)\n" +
-	"  pelegrun snextra --model X42 [--prefix P]              20-char field-19 value\n" +
+	"  pelegrun serial  --model X42 [--prefix P] [--seq N|--suffix S]  Code27 serial (band)\n" +
+	"  pelegrun snextra --model X42 [--prefix P] [--seq N|--suffix S]  field 19: serial + 8 '*'\n" +
 	"  pelegrun check   <serial>                              validate a serial\n" +
 	"  pelegrun envcheck [file|-] [--strict]                  hood env completeness gate, A/B slot + controller mode\n" +
 	"                                                         (--strict also needs rootfsname)\n" +

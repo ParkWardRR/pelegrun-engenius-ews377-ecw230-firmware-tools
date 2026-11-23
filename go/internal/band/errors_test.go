@@ -44,15 +44,19 @@ func TestModelCodeAndSnextraErrors(t *testing.T) {
 	if _, err := ModelCode("EPC1X4"); !errors.Is(err, ErrLength) {
 		t.Errorf("short ModelCode: want ErrLength, got %v", err)
 	}
-	if _, err := MakeSnextra("SWLW", "XX"); !errors.Is(err, ErrLength) {
+	if _, err := MakeSnextra("SWLW", "XX", "0001"); !errors.Is(err, ErrLength) {
 		t.Errorf("short model: want ErrLength, got %v", err)
 	}
-	if _, err := MakeSnextra("BAD!", "X42"); !errors.Is(err, ErrChar) {
+	if _, err := MakeSnextra("BAD!", "X42", "0001"); !errors.Is(err, ErrChar) {
 		t.Errorf("bad prefix: want ErrChar, got %v", err)
 	}
 	// Empty prefix defaults to SWLW.
-	x, err := MakeSnextra("", "X42")
+	x, err := MakeSnextra("", "X42", "0001")
 	if err != nil || x[:4] != "SWLW" {
 		t.Errorf("default prefix: got %q err %v", x, err)
+	}
+	// A wrong-length sequence field is a length error, not silent truncation.
+	if _, err := MakeSnextra("SWLW", "X42", "001"); !errors.Is(err, ErrLength) {
+		t.Errorf("short suffix: want ErrLength, got %v", err)
 	}
 }

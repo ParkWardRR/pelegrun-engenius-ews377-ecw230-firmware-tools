@@ -60,8 +60,8 @@ Everything the TUI shows is also scriptable:
 
 ```sh
 pelegrun discover http://192.168.1.1     # → family + which access adapter to use
-pelegrun serial  --model X42 --prefix SWLW --suffix 0001   # → SWLWX420001T
-pelegrun snextra --model X42             # → 20-char u-boot field-19 value
+pelegrun serial  --model X42 --prefix SWLW --seq 1   # → SWLWX42111DM
+pelegrun snextra --model X42 --seq 1     # → that serial + eight `*` (field 19)
 pelegrun check   EPC1X4200011            # → serial=… valid=true model_code=X42 model=ECW230v3
 pelegrun envcheck env.txt                # completeness gate; refuses if incomplete
 pelegrun redact  bundle.txt --mac --value <serial>   # scrub keys, tokens, serials, identity
@@ -69,23 +69,24 @@ pelegrun plan                            # print the ordered, gated flash plan
 pelegrun version
 ```
 
-### What `serial` and `snextra` do *not* do
+### The serial grammar `serial` and `snextra` follow
 
-Both produce values that pass the Code27 check. Neither produces a
-*factory-shaped* serial, which matters when a controller or a support tech looks
-at one. The vendor's own grammar (from `/usr/sbin/snconverter.sh` in the stock
-rootfs) is `YY` + month `1`-`9`/`A`-`C` + factory digit `0` + model code +
-**4 base-27 digits of sequence** + check char:
+The vendor's own layout, from `/usr/sbin/snconverter.sh` in the stock rootfs:
+`YY` + month `1`-`9`/`A`-`C` + factory digit `0` + model code + **4 base-27
+digits of sequence** + Code27 check char. Only the last character is ever
+validated, so a serial can pass the check and still not be factory-shaped —
+these two commands aim for the shape, not just the checksum.
 
-- `--suffix` is the sequence field, and it is **not** encoded for you. Pass the
-  four base-27 characters (alphabet `1DK3R5FPWME47GTX8VL2J6C9NQH`, index 0 =
-  `1`, so sequence 1 is `111D`). The default `0001` validates but is not
-  factory-shaped — `0` is not in that alphabet.
-- `snextra` emits `prefix + code + "0"` padding to 20
-  (`EPC1X42` → `EPC1X420000000000000`). That contains no 12-char serial and so
-  no check character, and the device's own `/usr/sbin/sncheck.sh` reports `NG`
-  on it. Real FIT units hold the 12-char serial plus eight `*`
-  (`26A0X45111DR********`) — build that from `serial` output instead.
+- **`--seq N` encodes the sequence for you**, as the four base-27 digits
+  (alphabet `1DK3R5FPWME47GTX8VL2J6C9NQH`, index 0 = `1`, so `--seq 1` → `111D`).
+  It wraps at 27⁴ = 531441, exactly as the vendor's `% 531441` does.
+- **`--suffix SSSS` passes four characters through verbatim**, for when you are
+  copying an existing unit's sequence field rather than numbering a new one.
+  Pass one or the other, not both. With neither, you get sequence 1.
+- **`snextra` emits a whole serial plus eight `*`** (`26A0X45111DR********`),
+  which is the shape real FIT units hold in u-boot field 19. It used to pad
+  `prefix + code` with zeros, which left the field with no serial and no check
+  character in it — the device's own `/usr/sbin/sncheck.sh` reads that as `NG`.
 
 For a **migration** between hardware-equivalent siblings, don't mint at all:
 read the unit's `snextra`, keep its date/factory/sequence, and swap only the
@@ -97,6 +98,11 @@ pelegrun serial --model X45 --prefix 26A0 --suffix 111D   # → 26A0X45111DR
 
 A freshly minted serial is a second device as far as the controller is
 concerned, and the unit's existing registration will not follow the hardware.
+
+`pelegrun check` / `quarry check` name the model behind a code using an EPC
+1.10.0 `models` table (73 codes), so an unfamiliar code usually resolves. Treat
+the answer as "what a current controller thinks": codes get retired and reused
+(`X25` was EWS330AP, now EWS356-FIT).
 
 `pelegrun envcheck` reads a `fw_printenv` dump (file, or `-` for stdin) and exits
 non-zero if the bootloader env is incomplete — the one state that bricks:

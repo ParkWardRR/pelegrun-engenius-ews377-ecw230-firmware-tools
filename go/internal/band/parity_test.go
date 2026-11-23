@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -78,16 +79,27 @@ func TestSerialParityWithQuarry(t *testing.T) {
 			t.Fatalf("serial mismatch for %q/%q/%q: band=%q quarry=%q", prefix, model, suffix, goSerial, rsSerial)
 		}
 
-		goSnextra, err := MakeSnextra(prefix, model)
+		goSnextra, err := MakeSnextra(prefix, model, suffix)
 		if err != nil {
 			t.Fatalf("band.MakeSnextra: %v", err)
 		}
-		rsSnextra, err := quarry(t, "snextra", "--prefix", prefix, "--model", model)
+		rsSnextra, err := quarry(t, "snextra", "--prefix", prefix, "--model", model, "--suffix", suffix)
 		if err != nil {
 			t.Fatalf("quarry snextra: %v", err)
 		}
 		if goSnextra != rsSnextra {
 			t.Fatalf("snextra mismatch for %q/%q: band=%q quarry=%q", prefix, model, goSnextra, rsSnextra)
+		}
+
+		// --seq must encode identically on both sides too.
+		n := uint32(r.next())
+		goSeq := Seq4(n)
+		rsSeq, err := quarry(t, "serial", "--prefix", prefix, "--model", model, "--seq", strconv.FormatUint(uint64(n), 10))
+		if err != nil {
+			t.Fatalf("quarry serial --seq: %v", err)
+		}
+		if want, _ := MakeSerial(prefix, model, goSeq); want != rsSeq {
+			t.Fatalf("--seq mismatch for %d: band=%q quarry=%q", n, want, rsSeq)
 		}
 	}
 }

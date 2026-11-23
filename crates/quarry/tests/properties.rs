@@ -92,10 +92,27 @@ fn snextra_is_well_formed_and_carries_model() {
     for _ in 0..ITERS {
         let prefix = rand_alnum(&mut r, 4);
         let model = rand_alnum(&mut r, 3);
-        let x = make_snextra(&prefix, &model).unwrap();
+        let suffix = rand_alnum(&mut r, 4);
+        let x = make_snextra(&prefix, &model, &suffix).unwrap();
         assert_eq!(x.len(), SNEXTRA_LEN);
         assert!(validate_snextra(&x));
         assert_eq!(model_code(&x).unwrap(), model);
+        // Whatever the inputs, the field holds a complete, valid serial.
+        assert!(validate_serial(&x[..12]));
+        assert!(x.ends_with("********"));
+    }
+}
+
+#[test]
+fn seq4_is_total_and_stays_in_the_alphabet() {
+    let mut r = Lcg::new(11);
+    for _ in 0..ITERS {
+        let n = r.next_u32();
+        let s = quarry::serial::seq4(n);
+        assert_eq!(s.len(), 4);
+        assert!(s.bytes().all(|b| CODE27.contains(&b)));
+        // Wrapping is modular, exactly like the vendor's `% 531441`.
+        assert_eq!(s, quarry::serial::seq4(n % quarry::serial::SEQ_SPACE));
     }
 }
 

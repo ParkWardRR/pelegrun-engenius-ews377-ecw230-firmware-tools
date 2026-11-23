@@ -12,14 +12,19 @@ USAGE:
   quarry rehead     <in.bin> <out.bin> --to <product_id> [--key <16hex>]  # e.g. --to 282
                     [--force-cross-board]
   quarry verify-ubi <factory.ubi> [--board <name>[,<name>...]]            # e.g. --board hk07,hk08
-  quarry serial     --model <CODE> [--prefix PPPP] [--suffix SSSS]
-  quarry snextra    --model <CODE> [--prefix PPPP]        # 20-char field 19
+  quarry serial     --model <CODE> [--prefix PPPP] [--seq N | --suffix SSSS]
+  quarry snextra    --model <CODE> [--prefix PPPP] [--seq N | --suffix SSSS]
+                                                          # serial + 8 '*' = field 19
   quarry check      <serial12>
   quarry products                                         # SKU / board / model-code table
 
 Product ids: 282 = EWS377AP v3, 300 = EWS377-FIT, 284 = ECW230v3, 291 = ECW336.
 Model codes:  X44 = EWS377AP v3, X45 = EWS377-FIT, X42 = ECW230v3, E4T = ECW336
               (note: not every code is X-prefixed).
+A serial is YY + month(1-9,A-C) + factory digit + model code + 4 base-27
+sequence digits + check char. --seq encodes the sequence for you (--seq 1 =>
+111D); --suffix passes 4 chars through verbatim. For a MIGRATION, keep the
+unit's own prefix and sequence and change only --model.
 rehead REFUSES a cross-board patch — 282/300/284 share the ap-hk07 board, the
 ECW336 (291) is ap-hk01-c6, and the payload keeps the donor's device tree.
 inspect/rehead auto-detect the XOR-obfuscated header of OpenWrt-built
@@ -194,10 +199,28 @@ fn cmd_verify_ubi(a: &[String]) -> Result<(), String> {
     }
 }
 
+/// The sequence field (serial positions 8–11): `--suffix` verbatim, or `--seq`
+/// encoded as the vendor's 4 base-27 digits. Defaults to sequence 1 (`111D`) —
+/// a shape a factory serial can actually have, unlike the old `0001` default
+/// (`0` is not in the Code27 alphabet).
+fn seq_arg(a: &[String], cmd: &str) -> Result<String, String> {
+    match (arg_val(a, "--suffix"), arg_val(a, "--seq")) {
+        (Some(_), Some(_)) => Err(format!("{cmd}: pass --suffix or --seq, not both")),
+        (Some(s), None) => Ok(s),
+        (None, Some(n)) => {
+            let seq: u32 = n
+                .parse()
+                .map_err(|_| format!("{cmd}: --seq wants a non-negative integer, got {n:?}"))?;
+            Ok(quarry::serial::seq4(seq))
+        }
+        (None, None) => Ok(quarry::serial::seq4(1)),
+    }
+}
+
 fn cmd_serial(a: &[String]) -> Result<(), String> {
     let model = arg_val(a, "--model").ok_or("serial: missing --model <CODE>")?;
     let prefix = arg_val(a, "--prefix").unwrap_or_else(|| "SWLW".to_string());
-    let suffix = arg_val(a, "--suffix").unwrap_or_else(|| "0001".to_string());
+    let suffix = seq_arg(a, "serial")?;
     let s = quarry::serial::make_serial(&prefix, &model, &suffix).map_err(|e| e.to_string())?;
     println!("{s}");
     Ok(())
@@ -206,7 +229,8 @@ fn cmd_serial(a: &[String]) -> Result<(), String> {
 fn cmd_snextra(a: &[String]) -> Result<(), String> {
     let model = arg_val(a, "--model").ok_or("snextra: missing --model <CODE>")?;
     let prefix = arg_val(a, "--prefix").unwrap_or_default();
-    let s = quarry::serial::make_snextra(&prefix, &model).map_err(|e| e.to_string())?;
+    let suffix = seq_arg(a, "snextra")?;
+    let s = quarry::serial::make_snextra(&prefix, &model, &suffix).map_err(|e| e.to_string())?;
     println!("{s}");
     Ok(())
 }
