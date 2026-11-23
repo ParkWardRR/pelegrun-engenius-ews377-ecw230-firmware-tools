@@ -64,6 +64,43 @@ Consequences for how you work on one:
 - What *is* better than the ap-hk07: its u-boot has a working TFTP recovery path
   (boot-menu option `2`), so a bad rootfs is recoverable over the wire.
 
+## The console header pin order differs between these boards
+A harness that works on one target can be silently backwards on the next. The
+EWS377-FIT and EWS377AP v3 both expose 4 pads **`V G T R`** (the FIT marks the
+`V` end with a silkscreen arrow; the v3 silkscreens the header `J2 UART`), and
+the **ECW336's order is mirrored relative to them**. Moving a harness between
+boards "in the same orientation" wires RX and TX to GND and VCC instead.
+
+Confirmed on hardware 2026-11-23: an EWS377-FIT in that state recorded
+**`rx 1 B` against `tx 800 B`** across a full reboot cycle — no bootloader
+banner, and the boot-menu key-blast never reached the device either. Flipping
+the connector end-for-end brought it up at once. The unit was fine throughout.
+
+Wire **`G`→GND, `T`→adapter RX, `R`→adapter TX**, leave **`V`** open, and find
+the `V` end from the arrow rather than from the plug's shape. **Never drive
+`V`** on a PoE-powered unit. On the v3, note the second **`UART_BT`** header
+immediately beside `J2` — that one is Bluetooth.
+
+Three checks worth building into any tooling that drives a console, because each
+one distinguishes a wiring fault from a dead board without touching the unit:
+
+- **`rx` near zero while `tx` climbs ⇒ wiring, not hardware.** Any powered
+  IPQ807x prints a bootloader banner within ~10 s of power-on; no banner means
+  no RX wire.
+- **A byte rate above ~11.5 KB/s is impossible at 115200 8N1 ⇒ your capture is
+  lying.** A wedged recorder replaying a stale buffer produced a convincing fake
+  "init respawn loop" at 490 KB/s — 42x line rate — and wasted real time before
+  the arithmetic gave it away.
+- **Prove both directions before trusting the link.** A climbing `rx` only
+  proves the board's TX. Send a bare CR and require the firmware login banner or
+  `IPQ807x# ` back.
+
+And the inverse error, made the same day: **`carrier = 0` on the provisioning
+NIC plus a silent console is equally consistent with "unpowered" and "powered,
+but the cable is loose and the console is unwired".** Do not infer power state
+from either. Get one positive signal — a DHCP lease, an HTTP response, a draw
+reading you trust — before declaring hardware dead.
+
 ## Scan for an open BSS after every flash or reset
 A factory-default EnGenius ECW AP brings up its Multi-AP/mesh onboarding temp
 WDS link as an **unencrypted** BSS — no Privacy bit, no RSN, no WPA — alongside
