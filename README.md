@@ -7,6 +7,11 @@ points (EWS377AP v3 · EWS377-FIT · ECW230v3 · IPQ807x) over the network — n
 UART required. One-field firmware re-head, Code27 serial provisioning,
 bootloader env safety gate, and firmware family fingerprinting. Rust + Go.
 
+Also knows the **ECW336** (`ap-hk01-c6`, Wi-Fi 6E): its SKU id, model code, MTD
+layout, A/B selector and controller gate, plus the guard that stops you
+re-heading an image onto the wrong board. That one is a **UART** job, not a
+network one — [see below](#related-hardware-the-ecw336-and-why-its-path-is-not-network-only).
+
 [![License: Blue Oak 1.0.0](https://img.shields.io/badge/License-Blue_Oak_1.0.0-0a7bbb.svg)](LICENSE)
 [![CI: local](https://img.shields.io/badge/CI-local%20(make%20ci)-informational.svg)](Makefile)
 [![Release](https://img.shields.io/github/v/release/ParkWardRR/pelegrun-ap-hk07-firmware-tools?color=success)](https://github.com/ParkWardRR/pelegrun-ap-hk07-firmware-tools/releases)
@@ -155,6 +160,33 @@ anything, re-confirmed by it: the ECW336 keeps its **only** copy of `ethaddr`,
 invalid and falls back to the Qualcomm dummy `00:03:7f:ba:db:ad`), so an erased
 or hand-rebuilt env there is permanent identity loss.
 
+### What the tool knows about it
+
+Three units on the bench turned the ECW336 from a hypothesis into facts the code
+now carries:
+
+| | what it is | where |
+|---|---|---|
+| SKU id | `291`, corroborated by env `hw_id=01010123` (vendor 257 + 291) | `quarry inspect`, `quarry products` |
+| board | `ap-hk01-c6` — cross-board re-heads refused | `quarry rehead` |
+| model code | `E4T` (not `X__`) | `pelegrun check`, `quarry check` |
+| A/B selector | env `active_fw` (`0`=FW1, `1`=FW2); `app_part` is not it | `pelegrun envcheck` |
+| controller gate | env `cloud_id=3` = private cloud | `pelegrun envcheck` |
+| shell | none usable → `needs_uart=true` | `pelegrun discover` |
+| partitions | `cert`/`userconfig`/`crashdump` + `0:ETHPHYFW`; ART is `mtd12` | backup planner |
+
+Two of those are traps rather than features. **The A/B rootfs labels are
+slot-relative:** `rootfs` always names the slot you are *running from* and
+`rootfs_1` the spare, so the labels swap after a slot switch and a remembered
+offset writes the live slot. And the recovery picture is genuinely mixed — the
+ECW336's u-boot *does* have a working TFTP recovery path (boot-menu option `2`),
+which the ap-hk07 units never offered, but option `9` beside it writes the
+bootloader and `e` erases the env that holds the unit's only MAC. The boot menu
+wants `4`+CR within ~2 s; a bare `4` does not select it, and the prompt is
+`IPQ807x# `, so anything matching on the ap-hk07's `(IPQ) #` will never fire.
+
+Details and the per-unit procedure: [`docs/USAGE.md`](docs/USAGE.md#uart-notes-for-the-ecw336-u-boot-201601-ecw336-v100).
+
 ## Quick start
 
 ```console
@@ -181,11 +213,16 @@ $ pelegrun redact bundle.txt --mac --value <serial>
 $ pelegrun
 ```
 
-**Product ids:** `282` EWS377AP v3 · `300` EWS377-FIT · `284` ECW230v3 · `275` ECW230 · `182` EWS377AP v2 · `285` ECW230S.
-**Model codes:** `X44` EWS377AP v3 · `X45` EWS377-FIT · `X42` ECW230v3.
+**Product ids:** `282` EWS377AP v3 · `300` EWS377-FIT · `284` ECW230v3 · `291` ECW336 · `275` ECW230 · `182` EWS377AP v2 · `285` ECW230S.
+**Model codes:** `X44` EWS377AP v3 · `X45` EWS377-FIT · `X42` ECW230v3 · `E4T` ECW336 — **not all are `X`-prefixed.**
 `hw_id` in the u-boot env (e.g. `0101012B` on the FIT: vendor `0x0101` + `0x012B`=299) is a
 *different* number from the header `product_id` (300) — see
 [`docs/USAGE.md`](docs/USAGE.md#hw_id-vs-product_id-open-data-request-8).
+
+`quarry products` prints the SKU → board → model-code table, and **`quarry
+rehead` refuses to patch an image across boards**: `282`/`300`/`284` are one
+board, `291` is another, and a re-head rewrites only the SKU gate — the payload
+keeps the donor's device tree either way.
 
 ## Install
 
