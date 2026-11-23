@@ -135,3 +135,37 @@ func TestDiscover(t *testing.T) {
 		t.Errorf("discover no-url: code=%d err=%q", code, errout)
 	}
 }
+
+// envcheck must surface the three things an operator needs before flashing an
+// ECW-line unit: the env is safe to append to, which slot the write goes to,
+// and that a stock unit's missing cloud_id routes it at EnGenius Cloud.
+func TestEnvcheckEcw336(t *testing.T) {
+	fixture := filepath.Join("..", "..", "internal", "hood", "testdata", "ecw336-printenv.txt")
+	code, out, errout := runCap("envcheck", fixture)
+	if code != 0 {
+		t.Fatalf("envcheck ECW336: code=%d out=%q err=%q", code, out, errout)
+	}
+	for _, want := range []string{
+		"COMPLETE",
+		"hw_id=01010123",
+		"running FW1",
+		"flash target FW2",
+		"fw_setenv active_fw 1",
+		"cloud_id unset",
+		"fw_setenv cloud_id 3",
+		"setenv cloud_id 3 ; saveenv",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("envcheck output missing %q:\n%s", want, out)
+		}
+	}
+
+	// An env whose active_fw cannot be read must say so rather than name a
+	// target: "the inactive slot" is then unknown.
+	dir := t.TempDir()
+	odd := filepath.Join(dir, "odd.txt")
+	os.WriteFile(odd, []byte("bootcmd=bootipq\nactive_fw=7\napp_part=0\n"), 0o644)
+	if code, out, _ := runCap("envcheck", odd); code != 0 || !strings.Contains(out, "do not flash") {
+		t.Errorf("unreadable active_fw: code=%d out=%q", code, out)
+	}
+}

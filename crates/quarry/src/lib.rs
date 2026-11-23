@@ -1,8 +1,9 @@
 //! # quarry
 //!
-//! Pure, I/O-free core for **Senao/EnGenius** firmware images on the `ap-hk07`
-//! (Qualcomm IPQ807x) board family — the shared hardware behind the EWS377AP v3,
-//! EWS377-FIT and ECW230v3.
+//! Pure, I/O-free core for **Senao/EnGenius** firmware images on the Qualcomm
+//! IPQ807x line: the `ap-hk07` board behind the EWS377AP v3, EWS377-FIT and
+//! ECW230v3, and the adjacent `ap-hk01-c6` board of the ECW336 (same silicon,
+//! same Senao container, different hardware — see [`header::Board`]).
 //!
 //! Two jobs, both deterministic and heavily unit-tested:
 //! - [`header`] — parse/validate the Senao image header and perform the
@@ -44,6 +45,17 @@ pub enum Error {
     NotFdt,
     /// A user-supplied header XOR key was malformed or does not decode the image.
     BadKey { reason: String },
+    /// The re-head would move an image between two different host boards. The
+    /// payload keeps the donor's device tree, so the target would boot the wrong
+    /// hardware description.
+    CrossBoard {
+        from: u32,
+        from_label: &'static str,
+        from_board: &'static str,
+        to: u32,
+        to_label: &'static str,
+        to_board: &'static str,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -63,6 +75,20 @@ impl core::fmt::Display for Error {
             Error::VolumeNotFound { name } => write!(f, "UBI volume not found: {name}"),
             Error::NotFdt => write!(f, "not a flattened device tree: bad or missing magic"),
             Error::BadKey { reason } => write!(f, "header key: {reason}"),
+            Error::CrossBoard {
+                from,
+                from_label,
+                from_board,
+                to,
+                to_label,
+                to_board,
+            } => write!(
+                f,
+                "refusing a cross-board re-head: {from} ({from_label}) is board {from_board}, \
+                 {to} ({to_label}) is board {to_board}. A re-head rewrites only the SKU gate — \
+                 the payload keeps the donor's device tree, ethernet topology and calibration, \
+                 so the target would boot the wrong hardware description"
+            ),
         }
     }
 }

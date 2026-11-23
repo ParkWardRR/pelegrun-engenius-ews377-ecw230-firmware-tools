@@ -9,13 +9,13 @@ import (
 	"strings"
 )
 
-// Family is the firmware family running on an ap-hk07 device.
+// Family is the firmware family running on a Senao IPQ807x device.
 type Family int
 
 const (
 	Unknown Family = iota
 	EwsLuCI        // ezMaster/EnSky EWS firmware — LuCI web, SSH exec on :8822
-	Cloud          // ECW230v3 cloud firmware — local React GUI + JSON API
+	Cloud          // ECW cloud firmware (ECW230v3, ECW336) — React GUI + JSON API
 	Fit            // EWS377-FIT firmware — FitController/EPC managed
 )
 
@@ -37,12 +37,26 @@ func (f Family) AccessHint() string {
 	switch f {
 	case EwsLuCI:
 		return "SSH exec on :8822 (root / web-admin pw) + LuCI flashops"
-	case Cloud, Fit:
+	case Cloud:
+		// Measured on a stock ECW336 (1.8.118-12): POST /api/mgm/ssh
+		// {"enable":true} really does start dropbear and :22 answers
+		// SSH-2.0-dropbear, but every login is refused at the account level
+		// ("Not support for root account."), so there is no exec channel to
+		// drive. Bootloader-env work on this family needs UART.
+		return "cloud local JSON API (admin/admin) — no usable shell (dropbear starts, accounts refused); budget UART for env writes"
+	case Fit:
 		return "cloud/FIT local JSON API (admin/admin) — no shell"
 	default:
 		return "unknown"
 	}
 }
+
+// NeedsUART reports whether changing the bootloader env on this firmware family
+// requires a serial console. Only the ECW cloud family does: it exposes no
+// usable shell, so there is no fw_setenv to reach over the network. This is the
+// one exception to the project's network-only workflow — and it is a property of
+// the firmware line, not of the board.
+func (f Family) NeedsUART() bool { return f == Cloud }
 
 // classify inspects a fetched HTML/JS body for family markers. Exposed for tests.
 func Classify(body string) Family {

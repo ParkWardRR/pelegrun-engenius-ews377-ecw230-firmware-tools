@@ -5,23 +5,31 @@
 use std::process::ExitCode;
 
 fn usage() -> &'static str {
-    "quarry — Senao/EnGenius ap-hk07 firmware header + serial tool (unofficial)
+    "quarry — Senao/EnGenius IPQ807x firmware header + serial tool (unofficial)
 
 USAGE:
   quarry inspect    <image.bin> [--key <16hex>]
   quarry rehead     <in.bin> <out.bin> --to <product_id> [--key <16hex>]  # e.g. --to 282
+                    [--force-cross-board]
   quarry verify-ubi <factory.ubi> [--board <name>[,<name>...]]            # e.g. --board hk07,hk08
   quarry serial     --model <CODE> [--prefix PPPP] [--suffix SSSS]
   quarry snextra    --model <CODE> [--prefix PPPP]        # 20-char field 19
   quarry check      <serial12>
+  quarry products                                         # SKU / board / model-code table
 
-Product ids: 282 = EWS377AP v3, 300 = EWS377-FIT, 284 = ECW230v3.
-Model codes:  X44 = EWS377AP v3, X45 = EWS377-FIT, X42 = ECW230v3.
+Product ids: 282 = EWS377AP v3, 300 = EWS377-FIT, 284 = ECW230v3, 291 = ECW336.
+Model codes:  X44 = EWS377AP v3, X45 = EWS377-FIT, X42 = ECW230v3, E4T = ECW336
+              (note: not every code is X-prefixed).
+rehead REFUSES a cross-board patch — 282/300/284 share the ap-hk07 board, the
+ECW336 (291) is ap-hk01-c6, and the payload keeps the donor's device tree.
 inspect/rehead auto-detect the XOR-obfuscated header of OpenWrt-built
 senao-factory.bin images (known key 783c9ecf67b359ac); pass --key for another.
 verify-ubi checks a factory.ubi's 'kernel' volume for FIT config nodes named
 'config@<board>' — ALL boards listed must be present (the ECW230v3 image carries
 both config@hk07 and config@hk08). Without --board it just lists the configs.
+A config slot name is NOT a board identity: stock ECW336 firmware boots out of
+config@hk07 too, and both vendors ship the same ~25 QSDK reference slots. Read
+the DTB's `compatible` to identify hardware.
 The OpenWrt EWS377AP v3 port only boots from NAND with a board-matched config
 name (see openwrt-ews377ap-v3/results-2026-09-06/ in the repo history for why)."
 }
@@ -44,6 +52,7 @@ fn main() -> ExitCode {
         "serial" => cmd_serial(rest),
         "snextra" => cmd_snextra(rest),
         "check" => cmd_check(rest),
+        "products" => cmd_products(),
         "-h" | "--help" | "help" | "" => {
             println!("{}", usage());
             Ok(())
@@ -79,6 +88,8 @@ fn cmd_inspect(a: &[String]) -> Result<(), String> {
     println!("file        : {path} ({} bytes)", data.len());
     println!("vendor_id   : {}", h.vendor_id);
     println!("product_id  : {} ({})", h.product_id, h.product().label());
+    let board = h.product().board();
+    println!("board       : {} ({})", board.label(), board.compatible());
     println!("fw_type     : {}", h.firmware_type);
     println!("model       : {}", h.model);
     match h.key {
@@ -92,6 +103,18 @@ fn cmd_inspect(a: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Adds the override hint to a cross-board refusal; otherwise falls through to
+/// the XOR-key hint so `rehead` keeps both diagnostics.
+fn cross_board_hint(msg: String) -> String {
+    if msg.starts_with("refusing a cross-board re-head") {
+        format!(
+            "{msg}\nhint: `quarry products` lists which SKUs share a board. --force-cross-board\n      overrides this, but only do that on the INACTIVE A/B slot with UART attached."
+        )
+    } else {
+        with_key_hint(msg)
+    }
 }
 
 fn with_key_hint(msg: String) -> String {
@@ -110,9 +133,14 @@ fn cmd_rehead(a: &[String]) -> Result<(), String> {
         .parse()
         .map_err(|_| "rehead: --to must be a number")?;
     let key = key_arg(a)?;
+    let force_cross_board = a.iter().any(|v| v == "--force-cross-board");
     let mut data = std::fs::read(input).map_err(|e| format!("read {input}: {e}"))?;
-    let old = quarry::header::rehead_with_key(&mut data, to, key.as_ref())
-        .map_err(|e| with_key_hint(e.to_string()))?;
+    let rehead = if force_cross_board {
+        quarry::header::rehead_cross_board_with_key
+    } else {
+        quarry::header::rehead_with_key
+    };
+    let old = rehead(&mut data, to, key.as_ref()).map_err(|e| cross_board_hint(e.to_string()))?;
     std::fs::write(output, &data).map_err(|e| format!("write {output}: {e}"))?;
     println!(
         "re-headed product_id {} -> {} : {} bytes -> {}",
@@ -183,6 +211,44 @@ fn cmd_snextra(a: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The SKU table: header `product_id`, host board, and serial model code. Boards
+/// are only named where a real DTB was diffed; everything else reads `unknown`
+/// rather than being guessed, and `rehead` will not refuse on an unknown board.
+fn cmd_products() -> Result<(), String> {
+    use quarry::header::Product;
+    println!(
+        "{:<5} {:<12} {:<12} {:<4} compatible",
+        "id", "model", "board", "code"
+    );
+    for p in [
+        Product::Ews377ApV2,
+        Product::Ecw230,
+        Product::Ews377ApV3,
+        Product::Ecw230V3,
+        Product::Ecw230S,
+        Product::Ecw336,
+        Product::Ews377Fit,
+    ] {
+        let code = quarry::serial::MODEL_CODES
+            .iter()
+            .find(|(_, name)| *name == p.label())
+            .map(|(c, _)| *c)
+            .unwrap_or("-");
+        println!(
+            "{:<5} {:<12} {:<12} {:<4} {}",
+            p.id(),
+            p.label(),
+            p.board().label(),
+            code,
+            p.board().compatible()
+        );
+    }
+    println!(
+        "\nA re-head only rewrites the SKU gate, so it is a plausible cross-flash only\nbetween SKUs on the SAME board. 282/300/284 are one board (ap-hk07); the\nECW336 is ap-hk01-c6 — same IPQ8072A silicon, different ethernet topology\n(dp4+dp5), an Aquantia 10G PHY and a QCN9074 6 GHz card. `unknown` means no\nDTB was diffed, not \"compatible\"."
+    );
+    Ok(())
+}
+
 fn cmd_check(a: &[String]) -> Result<(), String> {
     let s = a.first().ok_or("check: missing <serial12>")?;
     let ok = quarry::serial::validate_serial(s);
@@ -192,6 +258,10 @@ fn cmd_check(a: &[String]) -> Result<(), String> {
     println!("serial    : {s}");
     println!("valid     : {ok}");
     println!("model_code: {mc}");
+    println!(
+        "model     : {}",
+        quarry::serial::model_name(&mc).unwrap_or("unknown code")
+    );
     if ok {
         Ok(())
     } else {

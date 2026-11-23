@@ -7,8 +7,12 @@
 //
 // MTD partition indices are NOT stable across units/firmware (the EWS377-FIT has
 // extra cert/userconfig/crashdump partitions, so ART is mtd12 there, mtd11 on the
-// EWS377AP v3). Partitions are therefore resolved BY NAME from /proc/mtd and the
-// plan fails closed unless each critical name matches exactly once.
+// EWS377AP v3; the ECW336 carries those plus 0:ETHPHYFW and lands on mtd12 too).
+// Partitions are therefore resolved BY NAME from /proc/mtd and the plan fails
+// closed unless each critical name matches exactly once.
+//
+// Names are not positional either: the A/B rootfs labels are slot-relative and
+// swap with the active slot. See RunningRootfs / SpareRootfs.
 package mews
 
 import (
@@ -87,6 +91,12 @@ var specs = []partitionSpec{
 	// for restore, but a secret. userconfig can hold credentials.
 	{slug: "cert", names: []string{"cert"}, secret: true},
 	{slug: "userconfig", names: []string{"userconfig"}, secret: true},
+	// ETHPHYFW is the Aquantia 10G PHY's firmware, present on the ECW336
+	// (ap-hk01-c6) and absent on ap-hk07. u-boot CRC-checks and loads it before
+	// the uplink works at all, so on a unit that has one it is worth saving:
+	// without a good copy there is no network to recover over. Optional, so the
+	// plan still resolves on boards that don't carry it.
+	{slug: "ethphyfw", names: []string{"0:ethphyfw", "ethphyfw"}},
 }
 
 // Plan returns the layout-independent capture plan, for display. Real commands
@@ -168,6 +178,74 @@ func specFor(a Artifact) partitionSpec {
 		}
 	}
 	return partitionSpec{}
+}
+
+// The A/B rootfs partition names, as /proc/mtd and u-boot's mtdparts report
+// them. These labels are **slot-relative, not positional**: on a unit booted
+// from FW2 the FW2 rootfs is the one called `rootfs` and the FW1 one is called
+// `rootfs_1` — the names swap with the active slot. Verified on an ECW336,
+// where `rootfs` sat at 0x1000000 booted from FW1 and at 0x87c0000 booted from
+// FW2.
+//
+// Two consequences, both of them bite:
+//   - `rootfs` always means "the slot I am running from", so writing it is
+//     writing the live slot — exactly what invariant 1 forbids. `rootfs_1` is
+//     the write target.
+//   - a partition name must never be mapped to a hardcoded offset, and
+//     /proc/mtd has to be re-read after a slot switch.
+const (
+	RunningRootfs = "rootfs"   // always the slot currently booted
+	SpareRootfs   = "rootfs_1" // always the other slot — the flash target
+)
+
+// ErrNoSpareSlot means /proc/mtd shows no second rootfs, so there is no
+// inactive slot to write and the no-brick A/B path is not available.
+var ErrNoSpareSlot = fmt.Errorf("no %q partition in /proc/mtd: this unit has no spare A/B slot to write", SpareRootfs)
+
+// Rootfs resolves the running and spare rootfs partitions by name. It fails
+// closed: both must be present exactly once, because a flash plan that cannot
+// name the inactive slot must not run at all.
+//
+// The returned spare is the only partition a firmware write may target. Note
+// this reflects the slot that was running when procMtd was captured — a stale
+// capture names the wrong one, so read it fresh.
+func Rootfs(procMtd string) (running, spare Partition, err error) {
+	parts, err := ParseProcMtd(procMtd)
+	if err != nil {
+		return Partition{}, Partition{}, err
+	}
+	find := func(name string) ([]Partition, error) {
+		var hits []Partition
+		for _, p := range parts {
+			if strings.EqualFold(p.Name, name) {
+				hits = append(hits, p)
+			}
+		}
+		if len(hits) > 1 {
+			return nil, fmt.Errorf("partition %q matches %d /proc/mtd entries; refusing to guess", name, len(hits))
+		}
+		return hits, nil
+	}
+	run, err := find(RunningRootfs)
+	if err != nil {
+		return Partition{}, Partition{}, err
+	}
+	if len(run) == 0 {
+		return Partition{}, Partition{}, fmt.Errorf("no %q partition in /proc/mtd", RunningRootfs)
+	}
+	sp, err := find(SpareRootfs)
+	if err != nil {
+		return Partition{}, Partition{}, err
+	}
+	if len(sp) == 0 {
+		return Partition{}, Partition{}, ErrNoSpareSlot
+	}
+	if run[0].Size != sp[0].Size {
+		return Partition{}, Partition{}, fmt.Errorf(
+			"A/B rootfs sizes differ (%s %#x vs %s %#x): this is not a matched slot pair; refusing to plan a write",
+			RunningRootfs, run[0].Size, SpareRootfs, sp[0].Size)
+	}
+	return run[0], sp[0], nil
 }
 
 // Sanity checks a captured dump for the partition it claims to be. It returns an

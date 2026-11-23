@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -35,7 +36,38 @@ var LegacyBootVars = []string{"rootfsname"}
 // the compiled-in defaults, which is why `env default -a` is dangerous on a unit
 // that still has them (the stock cloud_guard cross-checks them against the
 // `cert` partition).
+//
+// On some units the env is the ONLY copy. An ECW336 prints
+// `eth0..eth5 MAC Address from ART is not valid` at boot and falls back to the
+// Qualcomm dummy 00:03:7f:ba:db:ad, so its real EnGenius-OUI MAC exists nowhere
+// but `ethaddr` here — erasing the env is permanent identity loss, not a
+// recoverable reset. Capture a printenv before touching anything.
 var IdentityVars = []string{"ethaddr", "hw_id", "sn", "snextra"}
+
+// ABSlotVar is the u-boot variable that selects which firmware slot boots.
+// Settled on hardware: u-boot reads `active_fw` and prints
+// `Booting from NAND FW<n>`. `app_part` sits alongside it and is NOT the
+// selector (it stayed 0 across a verified slot switch), and the rootfs's
+// `setconfig 38` / /proc/boot_info code is generic QSDK that is inert here —
+// so a slot switch must write `active_fw` and nothing else.
+const ABSlotVar = "active_fw"
+
+// CloudIDVar is the u-boot variable that selects which controller stack the
+// ECW firmware's init talks to. CloudIDPrivate routes it at a self-hosted
+// controller.
+//
+// The gate: /etc/init.d/ezmcloud reads this via cloudmode.sh and sources
+// minicloud-init.sh (the FIT path) only when it is "3" — otherwise it sources
+// ezmcloud-init.sh (the public-cloud path), which never loads the code that
+// reads force_ac, DHCP option 43 or mDNS. A stock unit has no cloud_id at all
+// and so defaults to 0, which is why controller-side overrides appear to be
+// ignored: nothing is reading them. In mode 3 the AP never contacts EnGenius
+// Cloud, so a previous owner's cloud ownership stops mattering.
+const (
+	CloudIDVar     = "cloud_id"
+	CloudIDPrivate = "3" // private cloud / self-hosted controller
+	CloudIDPublic  = "0" // EnGenius Cloud (the stock default, when unset)
+)
 
 // Profile selects which required-variable set Missing() checks.
 type Profile int
@@ -148,6 +180,116 @@ func (e Env) PlanSet(key, value string) (string, error) {
 		return "", fmt.Errorf("%w: missing %v — %s", ErrIncomplete, e.Missing(), e.Recovery())
 	}
 	return fmt.Sprintf("fw_setenv %s %s", key, value), nil
+}
+
+// PlanSetUboot is PlanSet rendered for the u-boot CLI instead of a running
+// Linux userspace. It carries the same completeness gate and the same
+// append-only guarantee; the only difference is the console it is typed at.
+//
+// Needed because the ECW cloud firmware family exposes no usable shell (see
+// eyas.Family.NeedsUART), so on those units there is no fw_setenv to reach over
+// the network and the env can only be touched from the bootloader prompt.
+func (e Env) PlanSetUboot(key, value string) (string, error) {
+	if _, err := e.PlanSet(key, value); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("setenv %s %s ; saveenv", key, value), nil
+}
+
+// Slot is an A/B firmware slot.
+type Slot int
+
+const (
+	// SlotUnknown means active_fw held something other than 0 or 1.
+	SlotUnknown Slot = -1
+	// SlotA is active_fw=0: u-boot's FW1.
+	SlotA Slot = 0
+	// SlotB is active_fw=1: u-boot's FW2.
+	SlotB Slot = 1
+)
+
+// String names the slot the way u-boot does.
+func (s Slot) String() string {
+	switch s {
+	case SlotA:
+		return "FW1"
+	case SlotB:
+		return "FW2"
+	default:
+		return "unknown"
+	}
+}
+
+// Value is the active_fw value that selects this slot.
+func (s Slot) Value() string { return strconv.Itoa(int(s)) }
+
+// Other returns the opposite slot — the one a flash must be written to.
+func (s Slot) Other() Slot {
+	switch s {
+	case SlotA:
+		return SlotB
+	case SlotB:
+		return SlotA
+	default:
+		return SlotUnknown
+	}
+}
+
+// ErrUnknownSlot means active_fw is absent or holds a value that is not 0 or 1,
+// so which slot is running cannot be established — and a flash must then not
+// proceed, because "the inactive slot" is unknown.
+var ErrUnknownSlot = errors.New("cannot determine the active A/B slot from " + ABSlotVar)
+
+// ActiveSlot reports which slot is currently booting.
+func (e Env) ActiveSlot() (Slot, error) {
+	switch strings.TrimSpace(e[ABSlotVar]) {
+	case "0":
+		return SlotA, nil
+	case "1":
+		return SlotB, nil
+	default:
+		return SlotUnknown, fmt.Errorf("%w (%s=%q)", ErrUnknownSlot, ABSlotVar, e[ABSlotVar])
+	}
+}
+
+// InactiveSlot reports the slot a flash may be written to (invariant 1: never
+// write the running slot, so a bad image is undone by booting the other one).
+func (e Env) InactiveSlot() (Slot, error) {
+	active, err := e.ActiveSlot()
+	if err != nil {
+		return SlotUnknown, err
+	}
+	return active.Other(), nil
+}
+
+// PlanSwitchSlot returns the append-only command that points the bootloader at
+// the other slot — the post-flash commit, and equally the rollback after a flash
+// that came up wrong. It writes only ABSlotVar: app_part is deliberately left
+// alone.
+//
+// MTD partition names are SLOT-RELATIVE on these units: booted from FW2, u-boot
+// calls the FW2 rootfs `rootfs` and the FW1 one `rootfs_1` — the labels swap, so
+// `rootfs` always means "the running slot". Never map a partition name to a
+// fixed offset, and re-read /proc/mtd after a slot switch.
+func (e Env) PlanSwitchSlot() (string, error) {
+	target, err := e.InactiveSlot()
+	if err != nil {
+		return "", err
+	}
+	return e.PlanSet(ABSlotVar, target.Value())
+}
+
+// PlanPrivateCloud returns the append-only command that routes an ECW-line
+// unit's init at a self-hosted controller (see CloudIDVar). It adds one variable
+// to an env already verified complete, and is reverted by setting CloudIDVar
+// back to CloudIDPublic — no erase, nothing rebuilt.
+//
+// This is only the routing gate. The controller side still has to accept the
+// check-in: register the device with the `preshared_initial` secret so the AP's
+// pre-shared-key signature validates, and make sure the AP's clock is right
+// (a stale header gets a distinct timestamp rejection, not a 404).
+func (e Env) PlanPrivateCloud() (string, error) {
+	return e.PlanSet(CloudIDVar, CloudIDPrivate)
 }
 
 // VerifyAfterSet checks that a re-read env reflects the intended write AND is

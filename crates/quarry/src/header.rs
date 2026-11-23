@@ -51,13 +51,16 @@ pub fn parse_key(s: &str) -> Result<Key, Error> {
     Ok(k)
 }
 
-/// Known `product_id` values on the ap-hk07 board family.
+/// Known `product_id` values on the IPQ807x Senao line.
 ///
-/// The three cross-flash siblings are `282`/`300`/`284`. The other ids were read
-/// from real vendor images (see `tests/real_images.rs`): `275` base ECW230,
-/// `182` the older EWS377AP v2 / `ews377ap-all` line, and `285` ECW230S (a
-/// related cloud AP with an extra scanning radio — labelled, but NOT a verified
-/// cross-flash target).
+/// The three cross-flash siblings are `282`/`300`/`284`, all on the **ap-hk07**
+/// board. The other ids were read from real vendor images (see
+/// `tests/real_images.rs`): `275` base ECW230, `182` the older EWS377AP v2 /
+/// `ews377ap-all` line, and `285` ECW230S (a related cloud AP with an extra
+/// scanning radio — labelled, but NOT a verified cross-flash target).
+///
+/// `291` ECW336 is the odd one out: same Senao container, same IPQ8072A
+/// silicon, **different board** — see [`Board`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Product {
     Ews377ApV2, // 182
@@ -66,6 +69,7 @@ pub enum Product {
     Ecw230,     // 275
     Ecw230V3,   // 284
     Ecw230S,    // 285
+    Ecw336,     // 291
     Other(u32),
 }
 
@@ -78,6 +82,7 @@ impl Product {
             275 => Product::Ecw230,
             284 => Product::Ecw230V3,
             285 => Product::Ecw230S,
+            291 => Product::Ecw336,
             other => Product::Other(other),
         }
     }
@@ -89,6 +94,7 @@ impl Product {
             Product::Ecw230 => 275,
             Product::Ecw230V3 => 284,
             Product::Ecw230S => 285,
+            Product::Ecw336 => 291,
             Product::Other(v) => v,
         }
     }
@@ -100,8 +106,75 @@ impl Product {
             Product::Ecw230 => "ECW230",
             Product::Ecw230V3 => "ECW230v3",
             Product::Ecw230S => "ECW230S",
+            Product::Ecw336 => "ECW336",
             Product::Other(_) => "unknown",
         }
+    }
+    /// The host board this SKU runs on. See [`Board`].
+    pub fn board(self) -> Board {
+        match self {
+            Product::Ews377ApV2 => Board::Unknown, // older line, DTB not verified here
+            Product::Ews377ApV3 | Product::Ews377Fit | Product::Ecw230V3 => Board::ApHk07,
+            Product::Ecw230 | Product::Ecw230S => Board::Unknown, // labelled, DTB unverified
+            Product::Ecw336 => Board::ApHk01C6,
+            Product::Other(_) => Board::Unknown,
+        }
+    }
+}
+
+/// The **host board** a SKU runs on, as the device tree's `compatible` reports it.
+///
+/// `product_id` names the SKU, not the hardware, and a re-head rewrites *only*
+/// that SKU gate — the payload keeps the donor's DTS, ethernet topology, PHY
+/// setup and calibration variant. So a re-head is a plausible cross-flash only
+/// between SKUs that share a board; across boards it produces an image that can
+/// boot into the wrong hardware description.
+///
+/// Read `compatible`, never the FIT config slot name and never the DT `model`
+/// string: a live ECW336 boots out of a slot *named* `config@hk07` and its
+/// `model` reads `IPQ8074/AP-HK07`, both stale Senao labels that the EWS377-FIT
+/// carries too. The machine-readable ids are what differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Board {
+    /// `qcom,ipq8074-ap-hk07` — EWS377AP v3 · EWS377-FIT · ECW230v3.
+    ApHk07,
+    /// `qcom,ipq8074-ap-hk01-c6`, `qcom,ipq8074-hk01` — the ECW336. Same
+    /// IPQ8072A silicon as ap-hk07 (`qcom,msm-id = <0x156 0x185>`), different
+    /// board: ethernet on `dp4`+`dp5` instead of `dp5`+`dp6`, an Aquantia 10G
+    /// PHY whose firmware loads from `0:ETHPHYFW`, and a QCN9074 6 GHz Pine
+    /// card on PCIe RC0 that the ap-hk07 DTS knows nothing about.
+    ApHk01C6,
+    /// Board not established for this SKU (no DTB diffed).
+    Unknown,
+}
+
+impl Board {
+    /// The DT `compatible` string this board is identified by.
+    pub fn compatible(self) -> &'static str {
+        match self {
+            Board::ApHk07 => "qcom,ipq8074-ap-hk07",
+            Board::ApHk01C6 => "qcom,ipq8074-ap-hk01-c6",
+            Board::Unknown => "unverified",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Board::ApHk07 => "ap-hk07",
+            Board::ApHk01C6 => "ap-hk01-c6",
+            Board::Unknown => "unknown",
+        }
+    }
+}
+
+/// Whether a re-head from `from` to `to` stays inside one board family.
+///
+/// `Some(true)` same board, `Some(false)` different boards (the image would
+/// describe the wrong hardware), `None` when either side's board has not been
+/// established — in which case the caller must not claim either way.
+pub fn same_board(from: Product, to: Product) -> Option<bool> {
+    match (from.board(), to.board()) {
+        (Board::Unknown, _) | (_, Board::Unknown) => None,
+        (a, b) => Some(a == b),
     }
 }
 
@@ -228,6 +301,11 @@ pub fn parse_with_key(data: &[u8], key: Option<&Key>) -> Result<Header, Error> {
 /// returns the previous `product_id`. Obfuscated headers are handled
 /// transparently with the [`KNOWN_KEYS`].
 ///
+/// Refuses a **cross-board** re-head (see [`Error::CrossBoard`]): when both the
+/// source and target SKUs have an established [`Board`] and those boards differ,
+/// the result would hand one board the other's hardware description. Use
+/// [`rehead_cross_board_with_key`] to override deliberately.
+///
 /// The payload `md5sum` covers the untouched payload (stays valid) and `chksum`
 /// is never read, so nothing else needs fixing.
 pub fn rehead(data: &mut [u8], new_product_id: u32) -> Result<u32, Error> {
@@ -236,13 +314,48 @@ pub fn rehead(data: &mut [u8], new_product_id: u32) -> Result<u32, Error> {
 
 /// Like [`rehead`], optionally with an explicit XOR `key`. For an obfuscated
 /// header the new id is written XOR'd with the key, and the result is re-parsed
-/// to prove it decodes to the requested id.
+/// to prove it decodes to the requested id. Keeps the cross-board guard.
 pub fn rehead_with_key(
     data: &mut [u8],
     new_product_id: u32,
     key: Option<&Key>,
 ) -> Result<u32, Error> {
+    rehead_inner(data, new_product_id, key, false)
+}
+
+/// [`rehead_with_key`] with the cross-board guard **disabled**.
+///
+/// Only for a deliberate experiment on a recoverable A/B slot with UART
+/// attached: the payload still carries the donor board's DTS, so the unit can
+/// come up with the wrong ethernet topology (on the ECW336, no uplink at all)
+/// while reporting the target model.
+pub fn rehead_cross_board_with_key(
+    data: &mut [u8],
+    new_product_id: u32,
+    key: Option<&Key>,
+) -> Result<u32, Error> {
+    rehead_inner(data, new_product_id, key, true)
+}
+
+fn rehead_inner(
+    data: &mut [u8],
+    new_product_id: u32,
+    key: Option<&Key>,
+    allow_cross_board: bool,
+) -> Result<u32, Error> {
     let h = parse_with_key(data, key)?;
+    let from = h.product();
+    let to = Product::from_id(new_product_id);
+    if !allow_cross_board && same_board(from, to) == Some(false) {
+        return Err(Error::CrossBoard {
+            from: from.id(),
+            from_label: from.label(),
+            from_board: from.board().label(),
+            to: to.id(),
+            to_label: to.label(),
+            to_board: to.board().label(),
+        });
+    }
     let new = new_product_id.to_be_bytes();
     for (i, nb) in new.iter().enumerate() {
         let off = OFF_PRODUCT_ID + i;
@@ -398,5 +511,73 @@ mod tests {
     fn rehead_rejects_non_senao() {
         let mut junk = vec![0u8; 0x100];
         assert!(rehead(&mut junk, 282).is_err());
+    }
+
+    #[test]
+    fn ecw336_is_a_known_product_on_its_own_board() {
+        let p = Product::from_id(291);
+        assert_eq!(p, Product::Ecw336);
+        assert_eq!(p.id(), 291);
+        assert_eq!(p.label(), "ECW336");
+        assert_eq!(p.board(), Board::ApHk01C6);
+        assert_eq!(p.board().compatible(), "qcom,ipq8074-ap-hk01-c6");
+        // The ap-hk07 trio really is one board.
+        for sib in [Product::Ews377ApV3, Product::Ews377Fit, Product::Ecw230V3] {
+            assert_eq!(sib.board(), Board::ApHk07, "{}", sib.label());
+        }
+    }
+
+    #[test]
+    fn same_board_is_honest_about_what_is_unverified() {
+        // Verified siblings.
+        assert_eq!(
+            same_board(Product::Ecw230V3, Product::Ews377ApV3),
+            Some(true)
+        );
+        // Verified as different boards.
+        assert_eq!(same_board(Product::Ecw336, Product::Ews377Fit), Some(false));
+        // Unverified on either side -> no claim, not a false "same".
+        assert_eq!(same_board(Product::Ecw230, Product::Ews377ApV3), None);
+        assert_eq!(same_board(Product::Other(777), Product::Ecw336), None);
+    }
+
+    #[test]
+    fn cross_board_rehead_is_refused_and_leaves_the_image_untouched() {
+        // ECW336 (ap-hk01-c6) -> EWS377-FIT (ap-hk07): different hardware.
+        let orig = synth(257, 291, "ECW336");
+        let mut d = orig.clone();
+        let err = rehead(&mut d, 300).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::CrossBoard {
+                from: 291,
+                to: 300,
+                ..
+            }
+        ));
+        assert_eq!(d, orig, "a refused rehead must not modify the image");
+        assert!(err.to_string().contains("ap-hk01-c6"));
+
+        // And the other direction.
+        let mut d2 = synth(257, 282, "EWS377AP v3");
+        assert!(matches!(
+            rehead(&mut d2, 291),
+            Err(Error::CrossBoard { .. })
+        ));
+    }
+
+    #[test]
+    fn cross_board_rehead_is_possible_only_with_the_explicit_override() {
+        let mut d = synth(257, 291, "ECW336");
+        let old = rehead_cross_board_with_key(&mut d, 300, None).unwrap();
+        assert_eq!(old, 291);
+        assert_eq!(parse(&d).unwrap().product_id, 300);
+    }
+
+    #[test]
+    fn unverified_boards_do_not_block_a_rehead() {
+        // ECW230 (275) has no diffed DTB, so the tool must not pretend to know.
+        let mut d = synth(257, 275, "ECW230");
+        assert_eq!(rehead(&mut d, 284).unwrap(), 275);
     }
 }

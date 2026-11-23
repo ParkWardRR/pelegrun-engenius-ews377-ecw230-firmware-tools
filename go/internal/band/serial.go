@@ -78,6 +78,27 @@ func ModelCode(s string) (string, error) {
 	return s[4:7], nil
 }
 
+// ModelCodes maps a 3-char model code (serial positions 5-7) to its model.
+// Mirrors quarry's serial::MODEL_CODES.
+//
+// The codes are NOT all X-prefixed: the ap-hk07 line uses X4n, which made `X__`
+// look like the rule, but the ECW336's code is E4T (read off a real unit's env
+// snextra and matching the EPC model table). Nothing may assume a leading X.
+var ModelCodes = map[string]string{
+	"X41": "ECW230",
+	"X42": "ECW230v3",
+	"X44": "EWS377AP v3",
+	"X45": "EWS377-FIT",
+	"E4T": "ECW336",
+}
+
+// ModelName returns the model a code names, and whether the code is one we have
+// actually seen on hardware. Unknown codes return false rather than a guess.
+func ModelName(code string) (string, bool) {
+	name, ok := ModelCodes[strings.ToUpper(code)]
+	return name, ok
+}
+
 // MakeSnextra builds a 20-char field-19 value with model3 at positions 5-7,
 // zero-padded. prefix defaults to "SWLW".
 func MakeSnextra(prefix, model3 string) (string, error) {

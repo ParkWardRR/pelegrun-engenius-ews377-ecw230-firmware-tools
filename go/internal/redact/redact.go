@@ -43,7 +43,11 @@ func placeholder(c Category) string { return "[REDACTED:" + string(c) + "]" }
 
 var (
 	// key is a secret key name; value is captured in the final group.
-	secretKV = regexp.MustCompile(`(?i)("?\b(?:password|passwd|psk|wpa_psk|wifi_?key|wifi_?password|secret|api_?key|token|access_token|refresh_token|stok|sysauth|sessionid|private_key)\b"?\s*[:=]\s*"?)([^"\s,;}&]+)`)
+	// `(?:\w+_)?secret` catches the prefixed controller forms too: `epc_secret`
+	// (the EPC check-in secret, which lives in the u-boot env and in a printenv
+	// dump) and `cloud_secret`/`fit_secret` have no word boundary before
+	// "secret", so a bare \bsecret\b walked straight past them.
+	secretKV = regexp.MustCompile(`(?i)("?\b(?:password|passwd|psk|wpa_psk|wifi_?key|wifi_?password|(?:\w+_)?secret|preshared(?:_\w+)?|api_?key|token|access_token|refresh_token|stok|sysauth|sessionid|private_key)\b"?\s*[:=]\s*"?)([^"\s,;}&]+)`)
 	bearer   = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+`)
 	jwt      = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}`)
 	pemKey   = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)

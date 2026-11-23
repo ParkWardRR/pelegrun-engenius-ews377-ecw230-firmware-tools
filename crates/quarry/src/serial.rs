@@ -75,6 +75,29 @@ pub fn validate_serial(s: &str) -> bool {
     }
 }
 
+/// Known 3-char model codes (serial positions 5–7) and the model each maps to.
+///
+/// **The codes are not all `X`-prefixed.** The ap-hk07 line happens to use
+/// `X4n`, which made `X__` look like the rule; the ECW336's code is `E4T`
+/// (read off a real unit's env `snextra`, and matching the EPC model table), so
+/// nothing here may assume a leading `X`.
+pub const MODEL_CODES: &[(&str, &str)] = &[
+    ("X41", "ECW230"),
+    ("X42", "ECW230v3"),
+    ("X44", "EWS377AP v3"),
+    ("X45", "EWS377-FIT"),
+    ("E4T", "ECW336"),
+];
+
+/// The model a 3-char code names, if it is one we have seen on hardware.
+/// Case-insensitive; `None` for anything unrecognised (never a guess).
+pub fn model_name(code: &str) -> Option<&'static str> {
+    MODEL_CODES
+        .iter()
+        .find(|(c, _)| c.eq_ignore_ascii_case(code))
+        .map(|(_, name)| *name)
+}
+
 /// The 3-char model code (positions 5–7) of a serial or `snextra`.
 pub fn model_code(s: &str) -> Result<&str, Error> {
     if s.len() < 7 {
@@ -119,6 +142,12 @@ pub fn make_snextra(prefix: &str, model_code3: &str) -> Result<String, Error> {
 ///
 /// Real FIT units store `snextra` as the 12-char serial followed by 8 `*`
 /// (12 + 8 = 20), so trailing `*` is accepted; `*` anywhere inside the body is not.
+///
+/// **ECW336 caveat:** on the one unit whose env was captured, `snextra` read as
+/// the bare 12-char serial and the `*` padding was not confirmed. Rather than
+/// loosen the length rule on a single observation, validate an ECW336 env value
+/// with [`validate_serial`] and read its code with [`model_code`] (which works
+/// on any string of 7+ chars) instead of calling this.
 pub fn validate_snextra(s: &str) -> bool {
     let body = s.trim_end_matches('*');
     s.len() == SNEXTRA_LEN
@@ -183,6 +212,29 @@ mod tests {
         assert_eq!(model_code(&snextra).unwrap(), "X45");
         assert!(!validate_snextra("2540X4*00010000000000")); // `*` inside the body
         assert!(!validate_snextra(&"*".repeat(SNEXTRA_LEN)));
+    }
+
+    // The ECW336's model code is `E4T` — not `X__`. Its real serial lives in
+    // the u-boot env `snextra` and is NOT published here (identity: the EPC
+    // pre-shared key is derived from mac+serial); this is a synthetic stand-in
+    // with the same shape. The Code27 check math was confirmed against the real
+    // 12-char value on hardware, so no separate alphabet is needed for ECW.
+    #[test]
+    fn ecw336_model_code_is_not_x_prefixed() {
+        assert_eq!(model_name("E4T"), Some("ECW336"));
+        assert_eq!(model_name("e4t"), Some("ECW336"));
+        assert_eq!(model_name("X45"), Some("EWS377-FIT"));
+        assert_eq!(model_name("ZZZ"), None);
+
+        let serial = make_serial("2290", "E4T", "0001").unwrap();
+        assert!(validate_serial(&serial));
+        assert_eq!(model_code(&serial).unwrap(), "E4T");
+        // A bare 12-char serial is what an ECW336 env held: too short for
+        // validate_snextra, but the model code is still readable.
+        assert!(!validate_snextra(&serial));
+        assert_eq!(model_code(&serial).unwrap(), "E4T");
+        // And the padded form a 20-char field would carry.
+        assert!(validate_snextra(&format!("{serial}********")));
     }
 
     #[test]

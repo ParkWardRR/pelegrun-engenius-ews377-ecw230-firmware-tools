@@ -1,0 +1,36 @@
+# SYNTHETIC ECW336 u-boot environment — structure only.
+#
+# Shape and variable set are copied from a real ECW336 (u-boot
+# 2016.01-ECW336-uboot_version:V1.0.0, firmware 1.8.118-12), but every
+# per-unit value is a stand-in: `ethaddr` is the Qualcomm dummy u-boot itself
+# falls back to, and `snextra` is a synthetic Code27-valid serial. The real
+# MAC and serial are identity material (the controller pre-shared key is
+# derived from them), so they are not published here.
+#
+# What this fixture pins:
+#   - `active_fw` is present and is the A/B selector (0 = FW1, 1 = FW2);
+#     `app_part` sits next to it and is NOT the selector.
+#   - `cloud_id` is ABSENT on a stock unit. That is the default that routes the
+#     init at EnGenius Cloud and makes force_ac / DHCP opt-43 / mDNS look
+#     broken, because in that mode nothing reads them.
+#   - `rootfsname` is absent, as on the EWS377-FIT: this generation boots
+#     without it, so only --strict should demand it.
+#   - `hw_id` 01010123 = vendor 0x0101 (257) + product 0x0123 (291), matching
+#     header product_id 291.
+baudrate=115200
+bootcmd=bootipq
+bootdelay=2
+active_fw=0
+app_part=0
+machid=0x8010006
+hw_id=01010123
+hw_ver=0101
+ethaddr=00:03:7f:ba:db:ad
+ipaddr=192.168.1.1
+serverip=192.168.1.10
+sn=000000001
+snextra=2290E4T0001M
+soc_hw_version=0x20020100
+stderr=serial@78B3000
+stdin=serial@78B3000
+stdout=serial@78B3000

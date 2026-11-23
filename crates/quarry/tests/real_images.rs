@@ -47,7 +47,7 @@ fn parses_real_firmware_headers() {
         assert_eq!(h.magic, header::MAGIC, "{name}: magic");
         assert_eq!(
             h.vendor_id, 257,
-            "{name}: vendor_id (ap-hk07 family is 257)"
+            "{name}: vendor_id (the whole Senao IPQ807x line is 257)"
         );
         // product_id must round-trip through the Product enum.
         assert_eq!(
@@ -57,7 +57,7 @@ fn parses_real_firmware_headers() {
             h.product_id
         );
         // A known id must carry a non-"unknown" label.
-        if matches!(h.product_id, 182 | 275 | 282 | 284 | 285 | 300) {
+        if matches!(h.product_id, 182 | 275 | 282 | 284 | 285 | 291 | 300) {
             assert_ne!(
                 h.product().label(),
                 "unknown",

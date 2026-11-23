@@ -151,3 +151,25 @@ func TestSnextraAndCloudGuardLog(t *testing.T) {
 		t.Errorf("non-secret text must be preserved:\n%s", out)
 	}
 }
+
+// A printenv from an adopted ECW-line unit carries `epc_secret` — the
+// controller check-in secret. A bare \bsecret\b never matched it, because `_`
+// is a word character, so the prefixed controller forms walked straight past
+// the redactor.
+func TestPrefixedSecretKeysAreRedacted(t *testing.T) {
+	in := "epc_secret=4f8b2c1ad9e0\ncloud_secret=deadbeefcafe\n" +
+		"fit_secret: \"0123456789ab\"\npreshared_key=abcdef012345\n" +
+		"secret=plainform\nbootcmd=bootipq\nactive_fw=0\n"
+	out := Default().Text(in)
+	for _, leak := range []string{"4f8b2c1ad9e0", "deadbeefcafe", "0123456789ab", "abcdef012345", "plainform"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("%q leaked:\n%s", leak, out)
+		}
+	}
+	// The key names and the ordinary env survive, so the log stays readable.
+	for _, keep := range []string{"epc_secret=", "preshared_key=", "bootcmd=bootipq", "active_fw=0"} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("%q should survive:\n%s", keep, out)
+		}
+	}
+}

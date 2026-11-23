@@ -14,11 +14,14 @@ func TestFamilyStringAndAccessHint(t *testing.T) {
 		f          Family
 		str        string
 		hintSubstr string
+		needsUART  bool
 	}{
-		{Cloud, "cloud", "no shell"},
-		{EwsLuCI, "ews-luci", "8822"},
-		{Fit, "fit", "no shell"},
-		{Unknown, "unknown", "unknown"},
+		// The cloud family is the one that has to go through UART: on a stock
+		// ECW336 dropbear can be started but every account is refused.
+		{Cloud, "cloud", "UART", true},
+		{EwsLuCI, "ews-luci", "8822", false},
+		{Fit, "fit", "no shell", false},
+		{Unknown, "unknown", "unknown", false},
 	}
 	for _, c := range cases {
 		if got := c.f.String(); got != c.str {
@@ -26,6 +29,9 @@ func TestFamilyStringAndAccessHint(t *testing.T) {
 		}
 		if got := c.f.AccessHint(); !strings.Contains(got, c.hintSubstr) {
 			t.Errorf("AccessHint(%s) = %q, want substring %q", c.str, got, c.hintSubstr)
+		}
+		if got := c.f.NeedsUART(); got != c.needsUART {
+			t.Errorf("NeedsUART(%s) = %t, want %t", c.str, got, c.needsUART)
 		}
 	}
 }
