@@ -101,6 +101,59 @@ but the cable is loose and the console is unwired".** Do not infer power state
 from either. Get one positive signal — a DHCP lease, an HTTP response, a draw
 reading you trust — before declaring hardware dead.
 
+## A cross-flashed unit can never use the OEM upgrade path again
+Plan for this *before* you cross-flash, because it decides whether the unit
+needs a console for the rest of its life. Once it runs another model's
+firmware, the GUI's local-file upgrade stops working — and fails in a way that
+blames your image.
+
+Measured on an EWS377-FIT running ECW230v3 1.8.114-1, authenticated as the
+controller-pushed local account:
+
+```
+POST /cgi-bin/upload.cgi
+-> 400 {"error_code":3,"error_message":"INVALID VALUE OF ARGUMENTS:firmware"}
+```
+
+Identical response for **all** of: the correct ECW230v3 image under form field
+`file`, under `firmware`, under twelve other field names, a 2 KB junk file, and
+**no file part at all**. Auth is genuinely enforced (401 without a token), so the
+endpoint is live — it rejects before reading any content. The likely gate is the
+board's own identity, which still reports the original model (`hw_id` read
+`0101012B`, an EWS377-FIT value, under ECW230v3 firmware).
+
+Consequences for how you plan a cross-flash:
+
+- **A cross-flash is only "finished" when you can still update it.** Flash the
+  version you actually want into **both** A/B slots while the console is
+  attached, rather than leaving one slot on an older build you can no longer
+  reach.
+- Do not count on a controller push as the fallback either. On a self-hosted EPC
+  the firmware-upgrade policy reported `is_connect_license_expired: true` /
+  `is_active: false`, and no manual push body was accepted.
+- `u-boot` TFTP + `nand write` at the offsets from the **target build's own**
+  `flash.scr` is unaffected by the identity mismatch, and remains the route that
+  works.
+
+## Re-read `flash.scr` for every build, not just every model
+The *write length* moves between builds of the same model while the erase ranges
+and subimage names stay identical — so a stale length looks entirely plausible
+and is easy to carry forward by hand:
+
+| ECW230v3 build | `nand erase` | `nand write` length |
+|---|---|---|
+| 1.8.114-1 | `0x01000000` + `0x06f00000` | `0x027a0000` |
+| 1.8.118-12 | `0x01000000` + `0x06f00000` | **`0x026a0000`** |
+
+The length always equals the carved subimage's own size, which gives a free
+cross-check. And verify end-to-end with the FIT's own `crc32` hashes rather than
+trusting the transfer: compare the carved file, then u-boot `crc32` over the
+loaded RAM image, then `nand read` the region back and `crc32` it again. For
+ECW230v3 1.8.118-12 those are `c6ec4258` (rootfs, 40 501 248 B) and `fc401bb9`
+(wififw v2, 2 752 512 B). A read-back comparison is only meaningful where no bad
+block falls inside the written range — `nand write` and `nand read` both skip
+bad blocks, so check the erase log first.
+
 ## Scan for an open BSS after every flash or reset
 A factory-default EnGenius ECW AP brings up its Multi-AP/mesh onboarding temp
 WDS link as an **unencrypted** BSS — no Privacy bit, no RSN, no WPA — alongside
