@@ -94,6 +94,22 @@ func or(v, def string) string {
 	return v
 }
 
+// modelCodeArg accepts a 3-char code, or a product name resolvable to one
+// (current controller table first, then the vendor's legacy table).
+func modelCodeArg(a []string, cmd string) (string, error) {
+	m := argVal(a, "--model")
+	if m == "" {
+		return "", fmt.Errorf("%s: --model <CODE|NAME> required (e.g. X42)", cmd)
+	}
+	if len(m) == 3 {
+		return m, nil
+	}
+	if code, ok := band.CodeForModelName(m); ok {
+		return code, nil
+	}
+	return "", fmt.Errorf("%s: %q is neither a 3-char model code nor a product name this build knows (pass the code)", cmd, m)
+}
+
 // seqArg resolves the sequence field at serial positions 8-11: --suffix
 // verbatim, or --seq encoded as the vendor's 4 base-27 digits. Defaults to
 // sequence 1 ("111D") — a shape a factory serial can actually have, unlike the
@@ -117,9 +133,20 @@ func seqArg(a []string, cmd string) (string, error) {
 }
 
 func cmdSerial(out io.Writer, a []string) error {
-	model := argVal(a, "--model")
-	if model == "" {
-		return fmt.Errorf("serial: --model <CODE> required (e.g. X42)")
+	model, err := modelCodeArg(a, "serial")
+	if err != nil {
+		return err
+	}
+	if old := argVal(a, "--from-legacy"); old != "" {
+		if argVal(a, "--prefix") != "" || argVal(a, "--seq") != "" {
+			return fmt.Errorf("serial: --from-legacy carries its own date and sequence; drop --prefix/--seq")
+		}
+		s, err := band.ConvertLegacySerial(old, model)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, s)
+		return nil
 	}
 	suffix, err := seqArg(a, "serial")
 	if err != nil {
@@ -134,9 +161,9 @@ func cmdSerial(out io.Writer, a []string) error {
 }
 
 func cmdSnextra(out io.Writer, a []string) error {
-	model := argVal(a, "--model")
-	if model == "" {
-		return fmt.Errorf("snextra: --model <CODE> required")
+	model, err := modelCodeArg(a, "snextra")
+	if err != nil {
+		return err
 	}
 	suffix, err := seqArg(a, "snextra")
 	if err != nil {
@@ -159,8 +186,18 @@ func cmdCheck(out io.Writer, a []string) error {
 	if !known {
 		name = "unknown code"
 	}
-	fmt.Fprintf(out, "serial=%s valid=%t model_code=%s model=%s\n",
-		a[0], band.ValidateSerial(a[0]), mc, name)
+	notes := band.ShapeNotes(a[0])
+	shape := "factory"
+	if len(notes) > 0 {
+		shape = "not-factory"
+	}
+	fmt.Fprintf(out, "serial=%s valid=%t model_code=%s model=%s shape=%s\n",
+		a[0], band.ValidateSerial(a[0]), mc, name, shape)
+	// Advisory: only the check character validates, so a hand-built serial can
+	// be valid and still plainly synthetic. Never changes the exit status.
+	for _, n := range notes {
+		fmt.Fprintf(out, "  note: %s\n", n)
+	}
 	if !band.ValidateSerial(a[0]) {
 		return fmt.Errorf("check character does not match")
 	}
@@ -266,6 +303,7 @@ const usageText = "pelegrun — cross-flash & recover EnGenius/Senao IPQ807x APs
 	"  pelegrun version | plan\n" +
 	"  pelegrun discover <url>            fingerprint firmware family (eyas)\n" +
 	"  pelegrun serial  --model X42 [--prefix P] [--seq N|--suffix S]  Code27 serial (band)\n" +
+	"  pelegrun serial  --model <CODE|NAME> --from-legacy <serial9>    old 9-char format\n" +
 	"  pelegrun snextra --model X42 [--prefix P] [--seq N|--suffix S]  field 19: serial + 8 '*'\n" +
 	"  pelegrun check   <serial>                              validate a serial\n" +
 	"  pelegrun envcheck [file|-] [--strict]                  hood env completeness gate, A/B slot + controller mode\n" +

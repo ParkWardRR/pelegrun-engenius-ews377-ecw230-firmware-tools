@@ -73,3 +73,73 @@ func TestMigrationSerials(t *testing.T) {
 		}
 	}
 }
+
+// The vendor's own script, run on the ECW336's extracted rootfs, turns
+// `228001234 EWS377APv3` into `2280X441DL2L`. Parity with that output.
+func TestLegacyConversionMatchesTheVendorScript(t *testing.T) {
+	code, ok := CodeForModelName("EWS377APv3")
+	if !ok || code != "X44" {
+		t.Fatalf("CodeForModelName(EWS377APv3) = %q, %t; want X44, true", code, ok)
+	}
+	got, err := ConvertLegacySerial("228001234", code)
+	if err != nil || got != "2280X441DL2L" {
+		t.Fatalf("ConvertLegacySerial = %q (%v); want 2280X441DL2L", got, err)
+	}
+	if !ValidateSerial(got) {
+		t.Errorf("%q should validate", got)
+	}
+	// Fails closed instead of emitting the vendor's XXX placeholder.
+	if _, ok := CodeForModelName("NoSuchAP"); ok {
+		t.Error("CodeForModelName should not guess")
+	}
+	for _, bad := range []string{"22800123", "22X001234", "2280012A4", ""} {
+		if _, err := ConvertLegacySerial(bad, "X44"); err == nil {
+			t.Errorf("ConvertLegacySerial(%q) should fail", bad)
+		}
+	}
+}
+
+// Name -> code is safe to merge across the two tables only while they never
+// disagree about a name; code -> name is the ambiguous direction.
+func TestLegacyAndCurrentTablesAgreeOnSharedNames(t *testing.T) {
+	for name, legacy := range LegacyModelCodes {
+		for code, current := range ModelCodes {
+			if strings.EqualFold(current, name) && code != legacy {
+				t.Errorf("%s is %s in snconverter.sh but %s in the EPC table", name, legacy, code)
+			}
+		}
+	}
+	// The code-level collisions stay unreachable through name lookup.
+	if c, _ := CodeForModelName("EWS330AP"); c != "X25" {
+		t.Errorf("EWS330AP = %q, want X25", c)
+	}
+	if c, _ := CodeForModelName("EWS356-FIT"); c != "X25" {
+		t.Errorf("EWS356-FIT = %q, want X25", c)
+	}
+	if n, _ := ModelName("X25"); n != "EWS356-FIT" {
+		t.Errorf("ModelName(X25) = %q, want the current answer EWS356-FIT", n)
+	}
+}
+
+func TestShapeNotesFlagHandBuiltSerials(t *testing.T) {
+	if n := ShapeNotes("26A0X45111DR"); len(n) != 0 {
+		t.Errorf("factory-shaped serial flagged: %v", n)
+	}
+	// What the old --suffix 0001 default produced: valid, not factory-shaped.
+	hand, _ := MakeSerial("SWLW", "X42", "0001")
+	if !ValidateSerial(hand) {
+		t.Fatal("precondition: hand-built serial should still validate")
+	}
+	if n := ShapeNotes(hand); len(n) != 4 {
+		t.Errorf("ShapeNotes(%q) = %v; want 4 notes", hand, n)
+	}
+	// A date-shaped prefix with a minted sequence leaves just the one note.
+	mixed, _ := MakeSerial("26A0", "X45", "0001")
+	n := ShapeNotes(mixed)
+	if len(n) != 1 || !strings.Contains(n[0], "Code27 alphabet") {
+		t.Errorf("ShapeNotes(%q) = %v; want the sequence-field note", mixed, n)
+	}
+	if len(ShapeNotes("short")) != 1 {
+		t.Error("a wrong-length serial should produce exactly one note")
+	}
+}

@@ -61,8 +61,9 @@ Everything the TUI shows is also scriptable:
 ```sh
 pelegrun discover http://192.168.1.1     # → family + which access adapter to use
 pelegrun serial  --model X42 --prefix SWLW --seq 1   # → SWLWX42111DM
+pelegrun serial  --model EWS377APv3 --from-legacy 228001234   # → 2280X441DL2L
 pelegrun snextra --model X42 --seq 1     # → that serial + eight `*` (field 19)
-pelegrun check   EPC1X4200011            # → serial=… valid=true model_code=X42 model=ECW230v3
+pelegrun check   EPC1X4200011            # → …valid=true model_code=X42 model=ECW230v3 shape=not-factory
 pelegrun envcheck env.txt                # completeness gate; refuses if incomplete
 pelegrun redact  bundle.txt --mac --value <serial>   # scrub keys, tokens, serials, identity
 pelegrun plan                            # print the ordered, gated flash plan
@@ -103,6 +104,46 @@ concerned, and the unit's existing registration will not follow the hardware.
 1.10.0 `models` table (73 codes), so an unfamiliar code usually resolves. Treat
 the answer as "what a current controller thinks": codes get retired and reused
 (`X25` was EWS330AP, now EWS356-FIT).
+
+### Auditing a serial's shape
+
+`check` also reports `shape=factory` / `shape=not-factory`, with a note per
+reason. It is **advisory and never changes the exit status** — that still
+depends only on the check character:
+
+```console
+$ quarry check SWLWX420001T
+valid     : true
+shape     : NOT factory-shaped (advisory)
+            - positions 1-2 are not a 2-digit year
+            - position 3 is not a month (1-9 then A/B/C for Oct-Dec)
+            - position 4 is not the factory digit 0
+            - positions 8-11 fall outside the Code27 alphabet, so the sequence was not machine-generated
+```
+
+Use it to sweep a fleet for units someone has re-stamped by hand, including
+anything minted with this toolkit's own pre-2026-11-23 `--suffix 0001` default.
+A real unit could in principle carry something unexpected, so treat a note as a
+prompt to go look, not as proof.
+
+### Converting a legacy 9-char serial
+
+`--from-legacy` does what the stock firmware's `/usr/sbin/snconverter.sh` does,
+and is verified against that script's output (`228001234` + `EWS377APv3` →
+`2280X441DL2L`):
+
+```sh
+pelegrun serial --model EWS377APv3 --from-legacy 228001234
+pelegrun serial --model X44        --from-legacy 228001234   # same, by code
+```
+
+`--model` takes a 3-char code or a product name — current controller table
+first, then the vendor's legacy one. Name → code is unambiguous even across the
+two tables (a test enforces that they never disagree about a name); code → name
+is the direction that isn't, so nothing resolves a code through the legacy
+table. Unlike the vendor's script, which emits the placeholder `XXX` for a name
+it doesn't know, this fails closed. The input's own date and sequence are
+carried across, so `--prefix`/`--seq` are rejected alongside it.
 
 `pelegrun envcheck` reads a `fw_printenv` dump (file, or `-` for stdin) and exits
 non-zero if the bootloader env is incomplete — the one state that bricks:

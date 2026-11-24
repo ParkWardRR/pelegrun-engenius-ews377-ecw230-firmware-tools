@@ -12,10 +12,11 @@ USAGE:
   quarry rehead     <in.bin> <out.bin> --to <product_id> [--key <16hex>]  # e.g. --to 282
                     [--force-cross-board]
   quarry verify-ubi <factory.ubi> [--board <name>[,<name>...]]            # e.g. --board hk07,hk08
-  quarry serial     --model <CODE> [--prefix PPPP] [--seq N | --suffix SSSS]
-  quarry snextra    --model <CODE> [--prefix PPPP] [--seq N | --suffix SSSS]
+  quarry serial     --model <CODE|NAME> [--prefix PPPP] [--seq N | --suffix SSSS]
+  quarry serial     --model <CODE|NAME> --from-legacy <serial9>   # old format -> new
+  quarry snextra    --model <CODE|NAME> [--prefix PPPP] [--seq N | --suffix SSSS]
                                                           # serial + 8 '*' = field 19
-  quarry check      <serial12>
+  quarry check      <serial12>                            # validity + factory shape
   quarry products                                         # SKU / board / model-code table
 
 Product ids: 282 = EWS377AP v3, 300 = EWS377-FIT, 284 = ECW230v3, 291 = ECW336.
@@ -25,6 +26,12 @@ A serial is YY + month(1-9,A-C) + factory digit + model code + 4 base-27
 sequence digits + check char. --seq encodes the sequence for you (--seq 1 =>
 111D); --suffix passes 4 chars through verbatim. For a MIGRATION, keep the
 unit's own prefix and sequence and change only --model.
+--from-legacy converts a 9-char serial (YY + month + 6 decimal digits) the way
+the stock firmware's /usr/sbin/snconverter.sh does, and fails closed on a model
+name it cannot resolve instead of emitting the vendor's XXX placeholder.
+`check` also reports whether a serial matches that layout: only the check
+character is ever validated, so a hand-built serial can be valid yet plainly
+synthetic. That report is advisory and never changes the exit status.
 rehead REFUSES a cross-board patch — 282/300/284 share the ap-hk07 board, the
 ECW336 (291) is ap-hk01-c6, and the payload keeps the donor's device tree.
 inspect/rehead auto-detect the XOR-obfuscated header of OpenWrt-built
@@ -217,8 +224,33 @@ fn seq_arg(a: &[String], cmd: &str) -> Result<String, String> {
     }
 }
 
+/// `--model` takes a 3-char code, or a product name we can resolve to one
+/// (current controller table first, then the vendor's legacy table).
+fn model_code_arg(a: &[String], cmd: &str) -> Result<String, String> {
+    let m = arg_val(a, "--model").ok_or(format!("{cmd}: missing --model <CODE|NAME>"))?;
+    if m.len() == 3 {
+        return Ok(m);
+    }
+    quarry::serial::code_for_model_name(&m)
+        .map(str::to_string)
+        .ok_or(format!(
+            "{cmd}: {m:?} is neither a 3-char model code nor a product name this build knows \
+         (try `quarry products`, or pass the code)"
+        ))
+}
+
 fn cmd_serial(a: &[String]) -> Result<(), String> {
-    let model = arg_val(a, "--model").ok_or("serial: missing --model <CODE>")?;
+    let model = model_code_arg(a, "serial")?;
+    if let Some(old) = arg_val(a, "--from-legacy") {
+        if arg_val(a, "--prefix").is_some() || arg_val(a, "--seq").is_some() {
+            return Err("serial: --from-legacy carries its own date and sequence; \
+                        drop --prefix/--seq"
+                .into());
+        }
+        let s = quarry::serial::convert_legacy_serial(&old, &model).map_err(|e| e.to_string())?;
+        println!("{s}");
+        return Ok(());
+    }
     let prefix = arg_val(a, "--prefix").unwrap_or_else(|| "SWLW".to_string());
     let suffix = seq_arg(a, "serial")?;
     let s = quarry::serial::make_serial(&prefix, &model, &suffix).map_err(|e| e.to_string())?;
@@ -227,7 +259,7 @@ fn cmd_serial(a: &[String]) -> Result<(), String> {
 }
 
 fn cmd_snextra(a: &[String]) -> Result<(), String> {
-    let model = arg_val(a, "--model").ok_or("snextra: missing --model <CODE>")?;
+    let model = model_code_arg(a, "snextra")?;
     let prefix = arg_val(a, "--prefix").unwrap_or_default();
     let suffix = seq_arg(a, "snextra")?;
     let s = quarry::serial::make_snextra(&prefix, &model, &suffix).map_err(|e| e.to_string())?;
@@ -286,6 +318,17 @@ fn cmd_check(a: &[String]) -> Result<(), String> {
         "model     : {}",
         quarry::serial::model_name(&mc).unwrap_or("unknown code")
     );
+    // Advisory only: the check character is the sole thing that *validates*, so
+    // a hand-built serial can be valid and still obviously synthetic.
+    let notes = quarry::serial::shape_notes(s);
+    if notes.is_empty() {
+        println!("shape     : matches the factory layout");
+    } else {
+        println!("shape     : NOT factory-shaped (advisory)");
+        for n in notes {
+            println!("            - {n}");
+        }
+    }
     if ok {
         Ok(())
     } else {

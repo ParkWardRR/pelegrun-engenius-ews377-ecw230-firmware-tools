@@ -203,6 +203,12 @@ $ quarry snextra --model X42 --prefix EPC1 --seq 1      # that serial + eight '*
 # Migrating an existing unit: keep its prefix and sequence, change only --model
 $ quarry serial  --model X45 --prefix 26A0 --suffix 111D
 
+# Convert a legacy 9-char serial, as the stock snconverter.sh does
+$ quarry serial  --model EWS377APv3 --from-legacy 228001234   # -> 2280X441DL2L
+
+# Audit one: validity, model, and whether it matches the factory layout
+$ quarry check   SWLWX420001T
+
 # Fingerprint what firmware an AP is running
 $ pelegrun discover http://192.168.1.1
 

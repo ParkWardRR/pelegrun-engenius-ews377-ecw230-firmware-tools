@@ -196,6 +196,122 @@ pub fn model_name(code: &str) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// The vendor's own **legacy** product-name → code table, transcribed from
+/// `modelCode()` in `/usr/sbin/snconverter.sh` (byte-identical in Cloud6E
+/// ECW336 1.8.118-12 and Fit6 EWS377-FIT 1.1.65-2 images). It covers only the
+/// ezMaster-era products whose 9-char serials were migrated to the current
+/// format, which is why half of these have no entry in [`MODEL_CODES`] at all.
+///
+/// **This is deliberately name → code, and nothing resolves a code to a name
+/// through it.** Two of its codes have since been reassigned (`X25` was
+/// EWS330AP, the controller now says EWS356-FIT; `CCE` was ENS620EXT, now
+/// ECW160), so using it in the other direction would produce a second,
+/// contradictory answer for a code. Where both tables know a *name* they agree
+/// on its code — enforced by a test.
+pub const LEGACY_MODEL_CODES: &[(&str, &str)] = &[
+    ("EWS357AP", "X23"),
+    ("EWS357APv2", "X23"),
+    ("EWS357APv3", "X24"),
+    ("EWS357APv4", "X28"),
+    ("EWS850AP", "XC2"),
+    ("EWS377AP", "X43"),
+    ("EWS377APv2", "X43"),
+    ("EWS377APv3", "X44"),
+    ("EWS330AP", "X25"),
+    ("EWS355AP", "X26"),
+    ("ENH1350EXT", "CC2"),
+    ("ENS620EXT", "CCE"),
+];
+
+/// The 3-char code for a product *name*, current table first, then the legacy
+/// one. Case-insensitive; `None` rather than a guess.
+///
+/// Safe in a way the reverse direction is not: distinct names may share a code
+/// (one board, two series), but no name maps to two different codes.
+pub fn code_for_model_name(name: &str) -> Option<&'static str> {
+    MODEL_CODES
+        .iter()
+        .find(|(_, n)| n.eq_ignore_ascii_case(name))
+        .map(|(c, _)| *c)
+        .or_else(|| {
+            LEGACY_MODEL_CODES
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, c)| *c)
+        })
+}
+
+/// The factory digit at serial position 4. `0` on every unit and every image
+/// seen so far — `snconverter.sh` hardcodes it.
+pub const FACTORY_DIGIT: char = '0';
+
+/// Why a serial does not look factory-made, as a list of notes. Empty means it
+/// matches the vendor's layout.
+///
+/// A serial is only ever *validated* by its check character, so a hand-built one
+/// passes [`validate_serial`] while still being obviously synthetic to anyone
+/// who knows the layout: `YY` + month (`1`–`9`, `A`–`C`) + [`FACTORY_DIGIT`] +
+/// model code + 4 base-27 sequence digits. These notes are advisory — a real
+/// unit could in principle carry something unexpected — so callers should report
+/// them, not refuse on them.
+pub fn shape_notes(serial: &str) -> Vec<&'static str> {
+    let mut notes = Vec::new();
+    if serial.len() != SERIAL_LEN {
+        notes.push("not 12 characters, so the factory layout cannot be read");
+        return notes;
+    }
+    let b = serial.as_bytes();
+    if !b[0].is_ascii_digit() || !b[1].is_ascii_digit() {
+        notes.push("positions 1-2 are not a 2-digit year");
+    }
+    if !matches!(b[2], b'1'..=b'9' | b'A'..=b'C' | b'a'..=b'c') {
+        notes.push("position 3 is not a month (1-9 then A/B/C for Oct-Dec)");
+    }
+    if b[3] != FACTORY_DIGIT as u8 {
+        notes.push("position 4 is not the factory digit 0");
+    }
+    if !b[7..11]
+        .iter()
+        .all(|c| CODE27.contains(&c.to_ascii_uppercase()))
+    {
+        notes.push("positions 8-11 fall outside the Code27 alphabet, so the sequence was not machine-generated");
+    }
+    notes
+}
+
+/// Re-encode a **legacy 9-char serial** into the current 12-char format, the
+/// way `/usr/sbin/snconverter.sh` does: keep the 3 date characters, insert the
+/// factory digit, place the target model code, re-encode the decimal sequence as
+/// 4 base-27 digits, append the check character.
+///
+/// The legacy format is `YY` + month (`1`–`9`, `A`–`C`) + a 6-digit decimal
+/// sequence. Unlike the vendor's script — which emits the model code `XXX` for
+/// any name it does not know — this fails closed; resolve names with
+/// [`code_for_model_name`] first.
+pub fn convert_legacy_serial(old9: &str, model_code3: &str) -> Result<String, Error> {
+    if old9.len() != 9 {
+        return Err(Error::BadLength {
+            field: "legacy serial",
+            want: 9,
+            got: old9.len(),
+        });
+    }
+    let b = old9.as_bytes();
+    let date_ok = b[0].is_ascii_digit()
+        && b[1].is_ascii_digit()
+        && matches!(b[2], b'1'..=b'9' | b'A'..=b'C' | b'a'..=b'c');
+    if !date_ok || !b[3..9].iter().all(u8::is_ascii_digit) {
+        return Err(Error::BadChar {
+            field: "legacy serial (want YY + month 1-9/A-C + 6 decimal digits)",
+        });
+    }
+    let seq: u32 = old9[3..9].parse().map_err(|_| Error::BadChar {
+        field: "legacy serial sequence",
+    })?;
+    let prefix = format!("{}{}", &old9[..3], FACTORY_DIGIT);
+    make_serial(&prefix, model_code3, &seq4(seq))
+}
+
 /// The 3-char model code (positions 5–7) of a serial or `snextra`.
 pub fn model_code(s: &str) -> Result<&str, Error> {
     if s.len() < 7 {
@@ -328,6 +444,67 @@ mod tests {
         for n in [0, 1, 999, 531440] {
             assert!(seq4(n).bytes().all(|b| CODE27.contains(&b)));
         }
+    }
+
+    // The vendor's own script, run on the ECW336's extracted rootfs, turns
+    // `228001234 EWS377APv3` into `2280X441DL2L`. This is parity with that
+    // output, not with our own re-derivation of it.
+    #[test]
+    fn legacy_conversion_matches_the_vendor_script() {
+        assert_eq!(code_for_model_name("EWS377APv3"), Some("X44"));
+        assert_eq!(
+            convert_legacy_serial("228001234", "X44").unwrap(),
+            "2280X441DL2L"
+        );
+        assert!(validate_serial(
+            &convert_legacy_serial("228001234", "X44").unwrap()
+        ));
+
+        // Fails closed where the vendor emits the placeholder `XXX`.
+        assert_eq!(code_for_model_name("ECW336"), Some("E4T")); // current table
+        assert_eq!(code_for_model_name("NoSuchAP"), None);
+        // Shape errors rather than silent truncation.
+        assert!(convert_legacy_serial("22800123", "X44").is_err()); // 8 chars
+        assert!(convert_legacy_serial("22X001234", "X44").is_err()); // bad month
+        assert!(convert_legacy_serial("2280012A4", "X44").is_err()); // non-digit seq
+    }
+
+    // Name -> code is safe to merge across the two tables only while they never
+    // disagree about a name. Code -> name is the direction that is ambiguous.
+    #[test]
+    fn legacy_and_current_tables_agree_on_every_shared_name() {
+        for (name, legacy_code) in LEGACY_MODEL_CODES {
+            if let Some((current_code, _)) = MODEL_CODES
+                .iter()
+                .find(|(_, n)| n.eq_ignore_ascii_case(name))
+            {
+                assert_eq!(
+                    current_code, legacy_code,
+                    "{name} is {legacy_code} in snconverter.sh but {current_code} in the EPC table"
+                );
+            }
+        }
+        // The known code-level collisions are *not* reachable through name lookup.
+        assert_eq!(code_for_model_name("EWS330AP"), Some("X25"));
+        assert_eq!(code_for_model_name("EWS356-FIT"), Some("X25"));
+        assert_eq!(model_name("X25"), Some("EWS356-FIT")); // one answer, the current one
+    }
+
+    #[test]
+    fn shape_notes_flag_hand_built_serials() {
+        // A factory-shaped serial: 2026-10, factory digit 0, sequence 1.
+        assert!(shape_notes("26A0X45111DR").is_empty());
+        // What the old `--suffix 0001` default produced: valid, not factory-shaped.
+        let hand = make_serial("SWLW", "X42", "0001").unwrap();
+        assert!(validate_serial(&hand));
+        let notes = shape_notes(&hand);
+        assert_eq!(notes.len(), 4, "got {notes:?}");
+        // The sequence-field note is the one that catches a minted serial whose
+        // prefix happens to look like a date.
+        let mixed = make_serial("26A0", "X45", "0001").unwrap();
+        assert_eq!(shape_notes(&mixed).len(), 1);
+        assert!(shape_notes(&mixed)[0].contains("Code27 alphabet"));
+        assert_eq!(shape_notes("short").len(), 1);
     }
 
     // The worked migration example: one date, one sequence, three identities.

@@ -8,6 +8,7 @@ package band
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -166,6 +167,121 @@ var ModelCodes = map[string]string{
 func ModelName(code string) (string, bool) {
 	name, ok := ModelCodes[strings.ToUpper(code)]
 	return name, ok
+}
+
+// LegacyModelCodes is the vendor's own legacy product-name -> code table,
+// transcribed from modelCode() in /usr/sbin/snconverter.sh (byte-identical in
+// Cloud6E ECW336 1.8.118-12 and Fit6 EWS377-FIT 1.1.65-2 images). It covers
+// only the ezMaster-era products whose 9-char serials were migrated to the
+// current format, which is why half of these have no ModelCodes entry.
+//
+// Deliberately name -> code only: two of its codes were later reassigned (X25
+// was EWS330AP, the controller now says EWS356-FIT; CCE was ENS620EXT, now
+// ECW160), so the reverse direction would give a code a second, contradictory
+// name. Where both tables know a name they agree on its code (test-enforced).
+var LegacyModelCodes = map[string]string{
+	"EWS357AP":   "X23",
+	"EWS357APV2": "X23",
+	"EWS357APV3": "X24",
+	"EWS357APV4": "X28",
+	"EWS850AP":   "XC2",
+	"EWS377AP":   "X43",
+	"EWS377APV2": "X43",
+	"EWS377APV3": "X44",
+	"EWS330AP":   "X25",
+	"EWS355AP":   "X26",
+	"ENH1350EXT": "CC2",
+	"ENS620EXT":  "CCE",
+}
+
+// FactoryDigit is serial position 4: '0' on every unit and image seen so far,
+// and hardcoded in snconverter.sh.
+const FactoryDigit = '0'
+
+// CodeForModelName returns the 3-char code for a product name, current table
+// first then the legacy one, and whether it resolved. Case-insensitive.
+//
+// Safe in a way the reverse direction is not: distinct names may share a code
+// (one board, two series), but no name maps to two different codes.
+func CodeForModelName(name string) (string, bool) {
+	up := strings.ToUpper(name)
+	for code, n := range ModelCodes {
+		if strings.ToUpper(n) == up {
+			return code, true
+		}
+	}
+	if code, ok := LegacyModelCodes[up]; ok {
+		return code, true
+	}
+	return "", false
+}
+
+// ShapeNotes lists the reasons a serial does not look factory-made. An empty
+// slice means it matches the vendor's layout: YY + month (1-9 then A/B/C) +
+// FactoryDigit + model code + 4 base-27 sequence digits.
+//
+// Only the check character ever *validates* a serial, so a hand-built one
+// passes ValidateSerial while still being obviously synthetic. These notes are
+// advisory -- report them, do not refuse on them.
+func ShapeNotes(serial string) []string {
+	if len(serial) != SerialLen {
+		return []string{"not 12 characters, so the factory layout cannot be read"}
+	}
+	var notes []string
+	digit := func(b byte) bool { return b >= '0' && b <= '9' }
+	if !digit(serial[0]) || !digit(serial[1]) {
+		notes = append(notes, "positions 1-2 are not a 2-digit year")
+	}
+	m := serial[2]
+	if !((m >= '1' && m <= '9') || (m >= 'A' && m <= 'C') || (m >= 'a' && m <= 'c')) {
+		notes = append(notes, "position 3 is not a month (1-9 then A/B/C for Oct-Dec)")
+	}
+	if serial[3] != FactoryDigit {
+		notes = append(notes, "position 4 is not the factory digit 0")
+	}
+	for i := 7; i < 11; i++ {
+		if !strings.ContainsRune(Code27, rune(upper(serial[i]))) {
+			notes = append(notes, "positions 8-11 fall outside the Code27 alphabet, so the sequence was not machine-generated")
+			break
+		}
+	}
+	return notes
+}
+
+func upper(b byte) byte {
+	if b >= 'a' && b <= 'z' {
+		return b - 32
+	}
+	return b
+}
+
+// ConvertLegacySerial re-encodes a legacy 9-char serial into the current
+// 12-char format the way /usr/sbin/snconverter.sh does: keep the 3 date
+// characters, insert the factory digit, place the target model code, re-encode
+// the decimal sequence as 4 base-27 digits, append the check character.
+//
+// The legacy format is YY + month (1-9, A-C) + a 6-digit decimal sequence.
+// Unlike the vendor's script -- which emits the code XXX for an unknown name --
+// this fails closed; resolve names with CodeForModelName first.
+func ConvertLegacySerial(old9, model3 string) (string, error) {
+	if len(old9) != 9 {
+		return "", fmt.Errorf("%w: legacy serial must be 9 chars", ErrLength)
+	}
+	digit := func(b byte) bool { return b >= '0' && b <= '9' }
+	m := old9[2]
+	ok := digit(old9[0]) && digit(old9[1]) &&
+		((m >= '1' && m <= '9') || (m >= 'A' && m <= 'C') || (m >= 'a' && m <= 'c'))
+	for i := 3; i < 9 && ok; i++ {
+		ok = digit(old9[i])
+	}
+	if !ok {
+		return "", fmt.Errorf("%w: legacy serial wants YY + month 1-9/A-C + 6 decimal digits", ErrChar)
+	}
+	seq, err := strconv.ParseUint(old9[3:9], 10, 32)
+	if err != nil {
+		return "", fmt.Errorf("%w: legacy sequence: %v", ErrChar, err)
+	}
+	return MakeSerial(old9[:3]+string(FactoryDigit), model3, Seq4(uint32(seq)))
 }
 
 // Seq4 encodes a unit sequence number as the 4 base-27 digits the factory

@@ -1,6 +1,7 @@
 package band
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,6 +101,27 @@ func TestSerialParityWithQuarry(t *testing.T) {
 		}
 		if want, _ := MakeSerial(prefix, model, goSeq); want != rsSeq {
 			t.Fatalf("--seq mismatch for %d: band=%q quarry=%q", n, want, rsSeq)
+		}
+	}
+}
+
+// The legacy converter has to agree across the two implementations too.
+func TestLegacyParityWithQuarry(t *testing.T) {
+	findQuarry(t) // skips if absent
+	r := lcg(21)
+	for i := 0; i < 50; i++ {
+		month := "123456789ABC"[r.next()%12]
+		old := fmt.Sprintf("%02d%c%06d", r.next()%100, month, r.next()%1000000)
+		goSerial, err := ConvertLegacySerial(old, "X44")
+		if err != nil {
+			t.Fatalf("band.ConvertLegacySerial(%q): %v", old, err)
+		}
+		rsSerial, err := quarry(t, "serial", "--model", "X44", "--from-legacy", old)
+		if err != nil {
+			t.Fatalf("quarry serial --from-legacy %s: %v", old, err)
+		}
+		if goSerial != rsSerial {
+			t.Fatalf("legacy mismatch for %q: band=%q quarry=%q", old, goSerial, rsSerial)
 		}
 	}
 }
